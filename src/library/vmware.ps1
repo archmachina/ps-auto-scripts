@@ -29,7 +29,7 @@ Function Remove-VMSnapshots
     process
     {
         # Retrieve snapshots older than Age
-        $snapshots = $vms | Get-Snapshot | Where-Object { $_.Created -lt ([DateTime]::Now.AddDays(-($Age))) }
+        $snapshots = $vm | Get-Snapshot | Where-Object { $_.Created -lt ([DateTime]::Now.AddDays(-($Age))) }
 
         # Finish here if no snapshots found
         if (($snapshots | Measure-Object).Count -lt 1)
