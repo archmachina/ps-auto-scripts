@@ -53,7 +53,14 @@ $output = Invoke-ServiceRun -RotateSizeKB 512 -Iterations 1 -LogPath $logPath -S
         $config = & "$serviceRoot\read_config.ps1" -ServiceName $ServiceName | Out-String
 
         Write-Information "Calling entrypoint: $scriptPath"
-        $config | & pwsh -NoProfile $scriptPath | Out-String -Stream
+        $global:LASTEXITCODE = 0
+        $config | & cmd.exe /c pwsh -NoProfile $scriptPath | Out-String -Stream
+
+        if ($global:LASTEXITCODE -ne 0)
+        {
+            Write-Error ("Script call failed with exit code: " + $global:LASTEXITCODE)
+        }
+
         Write-Information "Entrypoint finished"
     } catch {
         Write-Information "Script encountered an error: $_"
