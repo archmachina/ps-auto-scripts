@@ -54,7 +54,7 @@ $output = Invoke-ServiceRun -RotateSizeKB 512 -Iterations 1 -LogPath $logPath -S
 
         Write-Information "Calling entrypoint: $scriptPath"
         $global:LASTEXITCODE = 0
-        $config | & cmd.exe /c pwsh -NoProfile $scriptPath | Out-String -Stream
+        $config | & pwsh -NoProfile $scriptPath | Out-String -Stream
 
         if ($global:LASTEXITCODE -ne 0)
         {
