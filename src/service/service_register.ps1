@@ -8,8 +8,8 @@ param(
     [string]$ServiceName,
 
     [Parameter(Mandatory=$true)]
-    [ValidateSet("enable", "disable")]
-    [string]$Action
+    [ValidateSet("present", "absent")]
+    [string]$State
 )
 
 # Global Settings
@@ -105,14 +105,14 @@ Function Enable-Schedule
     }
 }
 
-Function Disable-Schedule
+Function Remove-Schedule
 {
     [CmdletBinding()]
     param()
 
     process
     {
-        Write-Information "Disabling scheduled task: $taskName"
+        Write-Information "Removing scheduled task: $taskName"
 
         # Get a list of all of the scheduled tasks
         $tasks = Get-ScheduledTask | ForEach-Object { $_.TaskName }
@@ -121,22 +121,22 @@ Function Disable-Schedule
         if ($tasks -contains $taskName)
         {
             Write-Information "Unregistering task"
-            Unregister-ScheduledTask -TaskName $taskName | Out-Null
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false | Out-Null
         } else {
             Write-Information "Task not found"
         }
     }
 }
 
-switch ($Action)
+switch ($State)
 {
-    "enable" {
+    "present" {
         Enable-Schedule
     }
-    "disable" {
-        Disable-Schedule
+    "absent" {
+        Remove-Schedule
     }
     default {
-        Write-Error "Unknown action supplied: $Action"
+        Write-Error "Unknown action supplied: $State"
     }
 }

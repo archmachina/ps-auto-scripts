@@ -72,6 +72,7 @@ $output = Invoke-ServiceRun -RotateSizeKB 512 -Iterations 1 -LogPath $logPath -S
 
 if ($failed)
 {
+    Write-Information "Service failed. Sending notification"
     & "$serviceRoot\notify.ps1" -Subject "Task: $ServiceName Failure" -Body ($output | Out-String)
 }
 
