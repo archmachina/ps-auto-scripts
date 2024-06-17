@@ -42,7 +42,7 @@ $defaultNotifier = {
     } | Out-String
 
     $messageParams = @{
-        Subject = $batch.Name
+        Subject = $subject
         To = $Env:MAIL_TO
         Body = ("<html><body><pre>" + $body + "</pre></body></html>")
         SmtpServer = $Env:MAIL_SERVER
@@ -112,7 +112,7 @@ try {
                     Write-Information ("Notification generated: {0}" -f $_.Title)
                     $_
                 } |
-                Send-Notifications -Name "Notification: $ServiceName" -Pass
+                Send-Notifications -Name $ServiceName -Pass
         } catch {
             $_
             try { $_.ScriptStackTrace | Format-List } catch {}
