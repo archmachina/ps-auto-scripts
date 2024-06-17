@@ -5,6 +5,10 @@
 param(
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
+    [string]$ServiceRoot,
+
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
     [string]$ServiceName,
 
     [Parameter(Mandatory=$true)]
@@ -20,8 +24,8 @@ $InformationPreference = "Continue"
 try { $PSStyle.OutputRendering = [System.Management.Automation.OutputRendering]::PlainText } catch {}
 
 # Global Vars
-$serviceRoot = "C:\svc"
 $taskName = "Auto-$ServiceName"
+$serviceCall = ([System.IO.Path]::Combine($ServiceRoot, "service_call.ps1"))
 
 $taskUser = $Env:TASK_USERNAME
 if ([string]::IsNullOrEmpty($taskUser))
@@ -49,15 +53,15 @@ Function Enable-Schedule
         $actions = @(
             $actionParams = @{
                 Execute = "pwsh.exe"
-                Argument = "-NoProfile C:\svc\service_call.ps1 -ServiceName $ServiceName"
-                WorkingDirectory = $serviceRoot
+                Argument = "-NoProfile -NonInteractive $serviceCall -ServiceRoot $ServiceRoot -ServiceName $ServiceName"
+                WorkingDirectory = $ServiceRoot
             }
             New-ScheduledTaskAction @actionParams
         )
 
         # Triggers for the scheduled task
         # Need to call the schedule.ps1 script to collect triggers for the scheduled task
-        $triggers = & "$serviceRoot\$serviceName\schedule.ps1"
+        $triggers = & ([System.IO.Path]::Combine($ServiceRoot, $serviceName, "schedule.ps1"))
 
         $triggers | ForEach-Object {
             if ($null -eq $_ -or $_.GetType().FullName -ne "Microsoft.Management.Infrastructure.CimInstance" -or

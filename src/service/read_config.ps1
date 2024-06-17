@@ -5,6 +5,10 @@
 param(
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
+    [string]$ServiceRoot,
+
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
     [string]$ServiceName
 )
 
@@ -14,11 +18,11 @@ $ErrorActionPreference = "Stop"
 $InformationPreference = "Continue"
 
 # Global variables
-$serviceRoot = "C:\svc"
+$servicePath = ([System.IO.Path]::Combine($ServiceRoot, $ServiceName))
+$serviceConfigPath = ([System.IO.Path]::Combine($ServicePath, "config"))
 
 # Read encrypted config from file, decrypt and output
-$secureStr = Get-Content -Encoding UTF8 "$serviceRoot\$ServiceName\config" |
-    ConvertTo-SecureString
+$secureStr = Get-Content -Encoding UTF8 $serviceConfigPath | ConvertTo-SecureString
 $config = [System.Net.NetworkCredential]::New('', $secureStr).Password
 $config
 

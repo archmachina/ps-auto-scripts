@@ -5,6 +5,10 @@
 param(
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
+    [string]$ServiceRoot,
+
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
     [string]$ServiceName
 )
 
@@ -16,28 +20,66 @@ $InformationPreference = "Continue"
 try { $PSStyle.OutputRendering = [System.Management.Automation.OutputRendering]::PlainText } catch {}
 
 # Global variables
-$serviceRoot = "C:\svc"
-$logPath = "C:\svc\${ServiceName}\log.txt"
+$servicePath = ([System.IO.Path]::Combine($ServiceRoot, $ServiceName))
+$logPath = ([System.IO.Path]::Combine($ServicePath, "log.txt"))
 
 # Read general config
-Set-Location $serviceRoot
+Set-Location $ServiceRoot
 . ./service_config.ps1
 
-# Modules
-Set-PSRepository PSGallery -InstallationPolicy Trusted
-@("SvcProc") | ForEach-Object {
-    Install-Module -Scope CurrentUser -Confirm:$false $_ -EA Ignore
-    Update-Module -Confirm:$false $_ -EA Ignore
-    Import-Module $_
+# Default handler for notifications
+$defaultNotifier = {
+    $batch = $_
+
+    # Batch name is the subject
+    $subject = ("Task: {0}" -f $batch.Name)
+
+    # Send a single email with all notifications
+    $body = $batch.Notifications | ForEach-Object {
+        ("Source: {0}/{1}" -f $_.Source, $_.Title)
+        $_.Body
+        ""
+    } | Out-String
+
+    $messageParams = @{
+        Subject = $batch.Name
+        To = $Env:MAIL_TO
+        Body = ("<html><body><pre>" + $body + "</pre></body></html>")
+        SmtpServer = $Env:MAIL_SERVER
+        From = $Env:MAIL_FROM
+        Port = $Env:MAIL_PORT
+        BodyAsHtml = $true
+    }
+
+    Send-MailMessage @messageParams -Verbose
 }
 
+$output = @()
 $script:failed = $false
 
-$output = Invoke-ServiceRun -RotateSizeKB 512 -Iterations 1 -LogPath $logPath -ScriptBlock {
-    $scriptPath = "$serviceRoot\$ServiceName\entrypoint.ps1"
-    Write-Information "Script Path: $scriptPath"
+try {
+    # Import modules
+    Set-PSRepository PSGallery -InstallationPolicy Trusted
+    @("AutomationUtils") | ForEach-Object {
+        Install-Module -Scope CurrentUser -Confirm:$false $_ -EA Ignore
+        Update-Module -Confirm:$false $_ -EA Ignore
+        Import-Module $_
+    }
 
-    try {
+    # Rotate the log file, if required
+    Reset-LogFile -LogPath $logPath -RotateSizeKB 512 -PreserveCount 5
+
+    # Create capture to allow streaming of content to console as well
+    $capture = New-Capture
+
+    & {
+        # Register default notifier
+        Register-Notifier -ScriptBlock $defaultNotifier
+
+        # Location of the entrypoint script to run for this task
+        $scriptPath = ([System.IO.Path]::Combine($servicePath, "entrypoint.ps1"))
+        Write-Information "Script Path: $scriptPath"
+
         # Check to make sure we have an entrypoint script
         if (!(Test-Path -PathType Leaf $scriptPath))
         {
@@ -45,34 +87,64 @@ $output = Invoke-ServiceRun -RotateSizeKB 512 -Iterations 1 -LogPath $logPath -S
         }
 
         # Change to service directory
-        Write-Information "Changing to $serviceRoot\$ServiceName"
-        Set-Location -Path "$serviceRoot\$ServiceName"
+        Write-Information "Changing to $ServicePath"
+        Set-Location -Path $ServicePath
 
         # Read service configuration
         Write-Information "Reading service configuration"
-        $config = & "$serviceRoot\read_config.ps1" -ServiceName $ServiceName | Out-String
+        $config = & ([System.IO.Path]::Combine($ServiceRoot, "read_config.ps1")) -ServiceRoot $ServiceRoot -ServiceName $ServiceName |
+            Out-String | ConvertFrom-Json
 
-        Write-Information "Calling entrypoint: $scriptPath"
-        $global:LASTEXITCODE = 0
-        $config | & pwsh -NoProfile $scriptPath | Out-String -Stream
+        try {
+            & {
+                Write-Information "Calling entrypoint: $scriptPath"
+                $global:LASTEXITCODE = 0
+                & $scriptPath -Config $config
 
-        if ($global:LASTEXITCODE -ne 0)
-        {
-            Write-Error ("Script call failed with exit code: " + $global:LASTEXITCODE)
+                if ($global:LASTEXITCODE -ne 0)
+                {
+                    Write-Error ("Script call failed with exit code: " + $global:LASTEXITCODE)
+                }
+
+                Write-Information "Entrypoint finished"
+            } *>&1 |
+                Select-ForType -Type AutomationUtilsNotification -Derived -Process {
+                    Write-Information ("Notification generated: {0}" -f $_.Title)
+                    $_
+                } |
+                Send-Notifications -Name "$ServiceName Notification" -Pass
+        } catch {
+            Write-Error "Entrypoint script failed with error: $_"
+            try { $_.ScriptStackTrace | Format-List } catch {}
+            $_
         }
+    } *>&1 |
+        Format-AsLog |
+        Out-String -Stream |
+        Copy-ToCapture -Capture $capture |
+        Tee-Object -Encoding UTF8 -Append -FilePath $logPath
 
-        Write-Information "Entrypoint finished"
-    } catch {
-        Write-Information "Script encountered an error: $_"
-        $script:failed = $true
+} catch {
+    Write-Information "Service failed: $_"
+    try { $_.ScriptStackTrace | Format-List } catch {}
+    Write-Information "Sending notification"
+
+    # Best effort convert capture to a string
+    $body = ""
+    try { $body = $capture.Content | Out-String } catch {}
+
+    # Send email using Send-MailMessage. Don't use registered notifiers as they could generate
+    # additional exceptions preventing any notification from being sent
+    $messageParams = @{
+        Subject = "Task: $ServiceName Failure"
+        To = $Env:MAIL_TO
+        Body = ("<html><body><pre>" + $body + "</pre></body></html>")
+        SmtpServer = $Env:MAIL_SERVER
+        From = $Env:MAIL_FROM
+        Port = $Env:MAIL_PORT
+        BodyAsHtml = $true
     }
 
-    Write-Information "Finished"
-} *>&1
-
-if ($failed)
-{
-    Write-Information "Service failed. Sending notification"
-    & "$serviceRoot\notify.ps1" -Subject "Task: $ServiceName Failure" -Body ($output | Out-String)
+    Send-MailMessage @messageParams -Verbose
 }
 
