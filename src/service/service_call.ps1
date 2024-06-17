@@ -54,9 +54,6 @@ $defaultNotifier = {
     Send-MailMessage @messageParams -Verbose
 }
 
-$output = @()
-$script:failed = $false
-
 try {
     # Import modules
     Set-PSRepository PSGallery -InstallationPolicy Trusted
