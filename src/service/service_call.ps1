@@ -112,11 +112,11 @@ try {
                     Write-Information ("Notification generated: {0}" -f $_.Title)
                     $_
                 } |
-                Send-Notifications -Name "$ServiceName Notification" -Pass
+                Send-Notifications -Name "Notification: $ServiceName" -Pass
         } catch {
-            Write-Error "Entrypoint script failed with error: $_"
-            try { $_.ScriptStackTrace | Format-List } catch {}
             $_
+            try { $_.ScriptStackTrace | Format-List } catch {}
+            Write-Error "Entrypoint script failed with error: $_"
         }
     } *>&1 |
         Format-AsLog |
