@@ -41,9 +41,12 @@ $defaultNotifier = {
         ""
     } | Out-String
 
+    # Recipients
+    $mailTo = $Env:MAIL_TO.Split(",").Trim()
+
     $messageParams = @{
         Subject = $subject
-        To = $Env:MAIL_TO
+        To = $mailTo
         Body = ("<html><body><pre>" + $body + "</pre></body></html>")
         SmtpServer = $Env:MAIL_SERVER
         From = $Env:MAIL_FROM
@@ -130,11 +133,14 @@ try {
     $body = ""
     try { $body = $capture.Content | Out-String } catch {}
 
+    # Recipients
+    $mailTo = $Env:MAIL_TO.Split(",").Trim()
+
     # Send email using Send-MailMessage. Don't use registered notifiers as they could generate
     # additional exceptions preventing any notification from being sent
     $messageParams = @{
         Subject = "Task: $ServiceName Failure"
-        To = $Env:MAIL_TO
+        To = $mailTo
         Body = ("<html><body><pre>" + $body + "</pre></body></html>")
         SmtpServer = $Env:MAIL_SERVER
         From = $Env:MAIL_FROM
