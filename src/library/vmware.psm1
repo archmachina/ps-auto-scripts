@@ -50,13 +50,10 @@ Register-Automation -Name vmware.snapshot_cleanup -ScriptBlock {
         }
 
         # Log a notification for the removed snapshots
-        $capture = New-Capture
-        & {
+        New-Notification -Title "Snapshots removed" -ScriptBlock {
             Write-Information "Removed snapshots:"
             Write-Information ($snapshots | Format-Table VM,Name,Created,SizeGB | Out-String)
-        } *>&1 | Copy-ToCapture -Capture $capture
-
-        New-Notification -Title "Snapshots removed" -Body ($capture | Out-String)
+        }
     }
 }
 
@@ -96,13 +93,64 @@ Register-Automation -Name vmware.vm_consolidate -ScriptBlock {
         }
 
         # Log a notification as we consolidated some VMs
-        $capture = New-Capture
-        & {
+        New-Notification -Title "VMs Consolidated" -ScriptBlock {
             Write-Information "VMs consolidated:"
             Write-Information ($consolidated | ForEach-Object { $_.Name })
-        } *>&1 | Copy-ToCapture -Capture $capture
+        }
+    }
+}
 
-        New-Notification -Title "VMs Consolidated" -Body ($capture | Out-String)
+Register-Automation -Name vmware.host_health -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [AllowEmptyCollection()]
+        $VMHosts
+    )
+
+    process
+    {
+        # Check for hosts that are not connected
+        Write-Information "Checking hosts connection state"
+        $notConnected = $VMHosts | Where-Object { $_.ConnectionState -ne "Connected" }
+        $count = ($notConnected | Measure-Object).Count
+        if ($count -gt 0)
+        {
+            # Some hosts are not in the Connected state, so we should generate an alert
+            New-Notification -Title "VM Hosts not connected" -ScriptBlock {
+                Write-Information "Some VM hosts are not connected:"
+                $notConnected | Format-Table -Property Name,ConnectionState
+            }
+        } else {
+            Write-Information "All hosts in 'Connected' state"
+        }
+
+        # Check for hosts with alerts
+        Write-Information "Checking for hosts with 'overall status' issues"
+        $hosts = $VMHosts | Where-Object {$_.ExtensionData.OverallStatus.ToString() -ne "green"}
+        $count = ($hosts | Measure-Object).Count
+        if ($count -gt 0)
+        {
+            New-Notification -Title "VM Hosts with status issues" -ScriptBlock {
+                $hosts | Select-Object -Property Name,@{N="OverallStatus";E={$_.ExtensionData.OverallStatus.ToString()}} | Format-Table
+            }
+        } else {
+            Write-Information "No hosts with overall status issues"
+        }
+
+        # Check for config status
+        Write-Information "Checking for hosts with config issues"
+        $hosts = $vmhosts | Where-Object {$_.ExtensionData.ConfigStatus.ToString() -ne "green"}
+        $count = ($hosts | Measure-Object).Count
+        if ($count -gt 0)
+        {
+            New-Notification -Title "VM Hosts with config issues" -ScriptBlock {
+                $hosts | Select-Object -Property Name,@{N="ConfigStatus";E={$_.ExtensionData.ConfigStatus.ToString()}} | Format-Table
+            }
+        } else {
+            Write-Information "No hosts with config status issues"
+        }
     }
 }
 
