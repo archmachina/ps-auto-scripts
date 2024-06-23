@@ -151,6 +151,32 @@ Register-Automation -Name vmware.host_health -ScriptBlock {
         } else {
             Write-Information "No hosts with config status issues"
         }
+
+        # Check for triggered alarms
+        Write-Information "Checking for triggered alarms for hosts"
+        $alarms = $vmhosts | ForEach-Object {
+            $vmhost = $_
+            $_.ExtensionData.TriggeredAlarmState | ForEach-Object {
+                $alarm = $_
+
+                [PSCustomObject]@{
+                    Name = $vmhost.Name
+                    Description = (Get-View -Id $alarm.Alarm).Info.Name
+                    Time = $alarm.Time
+                    Acknowledged = $alarm.Acknowledged
+                    AcknowledgedByUser = $alarm.AcknowledgedByUser
+                }
+            }
+        }
+
+        if (($alarms | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Host Alarms" -ScriptBlock {
+                $alarms | Format-Table -Wrap
+            }
+        } else {
+            Write-Information "No hosts with triggered alarms"
+        }
     }
 }
 
