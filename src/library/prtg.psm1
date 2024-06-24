@@ -9,41 +9,10 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = "Stop"
 $InformationPreference = "Continue"
 
+# Modules
+Import-Module AutomationUtils
+
 # Functions
-
-Function Limit-StringLength
-{
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory=$true,ValueFromPipeline)]
-        [ValidateNotNull()]
-        [string]$String,
-
-        [Parameter(Mandatory=$true)]
-        [ValidateNotNull()]
-        [int]$Length
-    )
-
-    process
-    {
-        $working = $String
-
-        # Going to include ..., so must be 4 or higher
-        if ($Length -lt 4)
-        {
-            Write-Error "Length must be 4 or greater"
-        }
-
-        # Truncate and add '...' if the length is too high
-        if ($working.Length -gt $Length)
-        {
-            $working = $working.Substring(0, $Length-3) + "..."
-        }
-
-        $working
-    }
-}
-
 
 Register-Automation -Name prtg.alert_history -ScriptBlock {
     [CmdletBinding()]

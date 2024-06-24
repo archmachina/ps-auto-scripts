@@ -13,9 +13,10 @@ $InformationPreference = "Continue"
 Set-PSRepository PSGallery -InstallationPolicy Trusted
 @("VMware.VimAutomation.Core") | ForEach-Object {
     Install-Module -Scope CurrentUser -Confirm:$false $_ -EA Ignore
-    Update-Module -Confirm:$false $_ -EA Ignore
     Import-Module $_
 }
+
+Import-Module AutomationUtils
 
 # Functions
 
@@ -106,7 +107,11 @@ Register-Automation -Name vmware.host_health -ScriptBlock {
         [Parameter(Mandatory=$true)]
         [ValidateNotNullOrEmpty()]
         [AllowEmptyCollection()]
-        $VMHosts
+        $VMHosts,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$IncludeAcknowledged = $false
     )
 
     process
@@ -154,25 +159,41 @@ Register-Automation -Name vmware.host_health -ScriptBlock {
 
         # Check for triggered alarms
         Write-Information "Checking for triggered alarms for hosts"
-        $alarms = $vmhosts | ForEach-Object {
+        $allAlarms = $vmhosts | ForEach-Object {
             $vmhost = $_
-            $_.ExtensionData.TriggeredAlarmState | ForEach-Object {
-                $alarm = $_
+
+            $vmhost.ExtensionData.TriggeredAlarmState | ForEach-Object {
+                $state = $_
+
+                $names = Get-View -Id $state.Alarm |
+                    ForEach-Object { $_.Info.Name } |
+                    Select-Object -Unique |
+                    Split-StringLength -WrapLength 60 |
+                    Out-String
 
                 [PSCustomObject]@{
                     Name = $vmhost.Name
-                    Description = (Get-View -Id $alarm.Alarm).Info.Name
-                    Time = $alarm.Time
-                    Acknowledged = $alarm.Acknowledged
-                    AcknowledgedByUser = $alarm.AcknowledgedByUser
+                    Description = $names
+                    Time = $state.Time
+                    Acknowledged = $state.Acknowledged
+                    AcknowledgedByUser = $state.AcknowledgedByUser
                 }
             }
         }
 
-        if (($alarms | Measure-Object).Count -gt 0)
+        # Filter out acknowledged alarms, if required
+        if (-not $IncludeAcknowledged)
+        {
+            $allAlarms = $allAlarms | Where-Object { -not $_.Acknowledged }
+        }
+
+        # Notification on current alarms for hosts
+        if (($allAlarms | Measure-Object).Count -gt 0)
         {
             New-Notification -Title "Host Alarms" -ScriptBlock {
-                $alarms | Format-Table -Wrap
+                $allAlarms |
+                    Format-Table -Wrap -Property Name,Time,Acknowledged,AcknowledgedByUser,Description |
+                    Out-String -Width 300
             }
         } else {
             Write-Information "No hosts with triggered alarms"
