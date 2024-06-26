@@ -25,6 +25,8 @@ WITH DBBackups AS (
 )
 SELECT
     sdb.name as database_name,
+    sdb.state as state,
+    sdb.state_desc as state_desc,
     sdb.recovery_model as recovery_model,
     sdb.recovery_model_desc as recovery_model_desc,
     dbb.backup_type as backup_type,
@@ -55,7 +57,15 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNullOrEmpty()]
-        [string]$ExecuteFrom = ""
+        [string]$ExecuteFrom = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$ExcludeFilter = @("tempdb"),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [bool]$OnlineOnly = $true
     )
 
     process
@@ -115,6 +125,8 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
 
                 [PSCustomObject]@{
                     database_name = $_.database_name
+                    state = $_.state
+                    state_desc = $_.state_desc
                     recovery_model = $_.recovery_model
                     recovery_model_desc = $_.recovery_model_desc
                     backup_type = $_.backup_type
@@ -154,6 +166,20 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
         $dbBackupRecords | ForEach-Object {
             $dbName = $_.database_name
             $dbState = $_
+
+            # Exclude this database, if it matches a filter
+            $filterMatches = $ExcludeFilter | Where-Object { $_ -match $dbName }
+            if (($filterMatches | Measure-Object).Count -gt 0)
+            {
+                # Found a match for the database name, so finish here
+                return
+            }
+
+            # Exclude the database, if it's not online and OnlineOnly is true
+            if ($OnlineOnly -and $_.state -ne 0)
+            {
+                return
+            }
 
             # Create a db state entry, if it doesn't already exist
             if (-not $dbBackupState.ContainsKey($dbName))
