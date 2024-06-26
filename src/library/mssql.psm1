@@ -65,7 +65,11 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [bool]$OnlineOnly = $true
+        [bool]$OnlineOnly = $true,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [bool]$StatusReport = $false
     )
 
     process
@@ -228,11 +232,6 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
             }
         }
 
-        # Log the database backup status
-        $dbBackupState.Values |
-            Format-Table -Property name,recovery_model,last_log_date,last_log_hours,last_full_date,last_full_hours |
-            Out-String -Width 300
-
         # Update each database entry with policy/threshold
         $policies | ForEach-Object {
             $policy = $_
@@ -258,6 +257,21 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
                     $dbBackupState[$db].policy_log_hours = [Math]::Abs([int]$policy["log_backup_hours"])
                 }
             }
+        }
+
+        # Log the database backup status
+        $capture = New-Capture
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Current database backup status:"
+            $dbBackupState.Values | Format-Table | Out-String -Width 300
+        }
+
+        # Send a notification with the backup status for all databases, if requested
+        # This is mutually exclusive with reporting on individual databases over thresholds
+        if ($StatusReport)
+        {
+            New-Notification -Title "Backup Status: $Name" -Body $capture.ToString()
+            return
         }
 
         # Check each database entry against policy
