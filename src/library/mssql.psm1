@@ -28,13 +28,12 @@ SELECT
     sdb.recovery_model as recovery_model,
     sdb.recovery_model_desc as recovery_model_desc,
     dbb.backup_type as backup_type,
-    dbb.backup_start_date as last_backup
+    dbb.backup_start_date as last_backup,
+    getdate() as current_datetime
 FROM sys.databases as sdb
 LEFT JOIN DBBackups as dbb
     ON dbb.database_name = sdb.name AND
     rn = 1
-WHERE
-    sdb.name != 'tempdb'
 "@
 
 # Functions
@@ -98,9 +97,33 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
                 Write-Error "DataSet has errors"
             }
 
-            $data.Tables.Rows |
-                Select-Object -Property database_name,recovery_model,recovery_model_desc,backup_type,last_backup |
-                ConvertTo-Json
+            $data.Tables.Rows | ForEach-Object {
+                $last_backup = $_.last_backup
+                $current_datetime = $_.current_datetime
+
+                # Make sure the last backup is a string
+                if ($null -ne $last_backup -and $last_backup -is [DateTime])
+                {
+                    $last_backup = $last_backup.ToString("o")
+                }
+
+                # Make sure the current datetime is a string
+                if ($null -ne $current_datetime -and $current_datetime -is [DateTime])
+                {
+                    $current_datetime = $current_datetime.ToString("o")
+                }
+
+                [PSCustomObject]@{
+                    database_name = $_.database_name
+                    recovery_model = $_.recovery_model
+                    recovery_model_desc = $_.recovery_model_desc
+                    backup_type = $_.backup_type
+
+                    # Add ___ to avoid powershell converting these dates
+                    last_backup = "___" + $last_backup
+                    current_datetime = "___" + $current_datetime
+                }
+            } | ConvertTo-Json
         }
 
         Write-Information "Connection: $Name"
@@ -150,12 +173,14 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
                 }
             }
 
-            # Make sure we're working in local time
-            $last_backup = $dbState.last_backup
-            if ($null -ne $last_backup)
+            # Extract DateTime values
+            $last_backup = $null
+            $last_backup_str = $dbState.last_backup.TrimStart("_")
+            if (![string]::IsNullOrEmpty($last_backup_str))
             {
-                $last_backup = $last_backup.ToLocalTime()
+                $last_backup = [DateTime]::Parse($last_backup_str)
             }
+            $now = [DateTime]::Parse($dbState.current_datetime.TrimStart("_"))
 
             # Extract specific types of backups
             switch ($_.backup_type)
@@ -164,14 +189,14 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
                     $dbBackupState[$dbName].last_log_date = $last_backup
                     if ($null -ne $last_backup)
                     {
-                        $dbBackupState[$dbName].last_log_hours = [Math]::Round(([DateTime]::Now - $last_backup).TotalHours, 2)
+                        $dbBackupState[$dbName].last_log_hours = [Math]::Round(($now - $last_backup).TotalHours, 2)
                     }
                 }
                 "D" {
                     $dbBackupState[$dbName].last_full_date = $last_backup
                     if ($null -ne $last_backup)
                     {
-                        $dbBackupState[$dbName].last_full_hours = [Math]::Round(([DateTime]::Now - $last_backup).TotalHours, 2)
+                        $dbBackupState[$dbName].last_full_hours = [Math]::Round(($now - $last_backup).TotalHours, 2)
                     }
                 }
             }
