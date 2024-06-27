@@ -46,6 +46,8 @@ Register-Automation -Name vmware.snapshot_cleanup -ScriptBlock {
 
         # Remove each snapshot
         $snapshots | ForEach-Object {
+            $snapshot = $_
+
             Write-Information ("Removing snapshot: " + $snapshot.Name)
             $_ | Remove-Snapshot -Confirm:$false | Out-Null
         }
