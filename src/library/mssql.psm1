@@ -38,6 +38,22 @@ LEFT JOIN DBBackups as dbb
     rn = 1
 "@
 
+$jobCheck = @"
+SELECT
+    sj.name as job_name,
+    sjh.step_name,
+    sjh.run_status,
+    sjh.message,
+    msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time) as run_datetime
+FROM msdb.dbo.sysjobhistory as sjh
+INNER JOIN msdb.dbo.sysjobs AS sj ON sj.job_id = sjh.job_id
+WHERE
+    sj.enabled = 1 AND
+    --sjh.run_status in (0,2) AND
+    msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time) > DATEADD(HOUR, {0}, getdate())
+ORDER BY run_datetime ASC
+"@
+
 $queryScript = {
     param(
         [Parameter(Mandatory=$true)]
@@ -70,6 +86,7 @@ $queryScript = {
     $adp = New-Object System.Data.SqlClient.SqlDataAdapter $sqlcmd
     $data = New-Object System.Data.DataSet
     $records = $adp.Fill($data)
+    Write-Information "Retrieved $records records"
 
     # Close the connection
     $sqlconn.Close()
@@ -79,6 +96,14 @@ $queryScript = {
     {
         Write-Error "DataSet has errors"
     }
+
+    # Return an empty list, if there were no matching records
+    if ($records -eq 0)
+    {
+        @()
+        return
+    }
+
 
     $data.Tables.Rows | ConvertTo-CSV
 }
@@ -282,6 +307,112 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
             New-Notification -Title "Missing Database Backups: $Name" -ScriptBlock {
                 Write-Information "Databases missing a recent log or full backup ($Name):"
                 $errant | Format-Table | Out-String -Width 300
+            }
+        }
+    }
+}
+
+Register-Automation -Name mssql.job_status -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ConnectionString,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExecuteFrom = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 1,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [bool]$StatusReport = $false
+    )
+
+    process
+    {
+        Write-Information "Connection: $Name"
+
+        # Query age must be positive
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # Invoke command parameters
+        $invokeArgs = @{
+            ScriptBlock = $queryScript
+            ArgumentList = $Name,$ConnectionString,($jobCheck -f (-$AgeHours))
+        }
+
+        # Determine what machine to run the check from
+        if ([string]::IsNullOrEmpty($ExecuteFrom))
+        {
+            Write-Information "Executing locally"
+        } else {
+            $invokeArgs["ComputerName"] = $ExecuteFrom
+            Write-Information "Executing from $ExecuteFrom"
+        }
+
+        # Invoke check scripts
+        $result = Invoke-Command @invokeArgs
+
+        # Deserialise the records and transform
+        $records = $result | ConvertFrom-CSV | ForEach-Object {
+            # Perform any transforms on the record
+            [PSCustomObject]@{
+                job_name = $_.job_name
+                step_name = $_.step_name
+                run_status = $_.run_status
+                message = $_.message
+                run_datetime = [DateTime]::Parse($_.run_datetime)
+            }
+        }
+
+        Write-Information ("Found {0} job records" -f ($records | Measure-Object).Count)
+
+        # Group objects by job,step and run status
+        # ignore message as we just want the last message for the run_status (i.e. last failure message)
+        $summary = $records | Sort-Object -Property run_datetime -Descending |
+            Group-Object -Property job_name,step_name,run_status |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    job_name = $_.Group[0].job_name | Limit-StringLength -Length 40
+                    step_name = $_.Group[0].step_name | Limit-StringLength -Length 40
+                    run_status = $_.Group[0].run_status
+                    count = $_.Count
+                    last_run = $_.Group[0].run_datetime
+                    message = $_.Group[0].message | Limit-StringLength -Length 80
+                }
+            }
+
+        Write-Information ("Grouped to {0} job summaries" -f ($summary | Measure-Object).Count)
+
+        # Log the job status
+        $capture = New-Capture
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Job Status Report ($Name) (last $AgeHours hours):"
+            $summary | Format-Table | Out-String -Width 300
+        }
+
+        # Just display everything, if this is a status report
+        if ($StatusReport)
+        {
+            New-Notification -Title "Job Status Report ($Name)" -Body $capture.ToString()
+            return
+        }
+
+        # Send a notification if any jobs have error statuses
+        $errorSummary = $summary | Where-Object { $_.run_status -in @(0,2) }
+        if (($errorSummary | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Job errors found ($Name)" -ScriptBlock {
+                Write-Information "Job errors found ($Name):"
+                $errorSummary | Format-Table | Out-String -Width 300
             }
         }
     }
