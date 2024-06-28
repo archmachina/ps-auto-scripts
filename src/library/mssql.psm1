@@ -38,6 +38,52 @@ LEFT JOIN DBBackups as dbb
     rn = 1
 "@
 
+$queryScript = {
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ConnectionString,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$CommandText
+    )
+
+    # Settings
+    $ErrorActionPreference = "Stop"
+    $InformationPreference = "Continue"
+    Set-StrictMode -Version 2
+
+    # Establish connection to the SQL instance
+    Write-Information "Connecting to instance: $Name"
+    $sqlconn = New-Object System.Data.SqlClient.SqlConnection
+    $sqlconn.ConnectionString = $ConnectionString
+    $sqlconn.Open()
+
+    # Perform query against the instance
+    $sqlcmd = $sqlconn.CreateCommand()
+    $sqlcmd.CommandText = $CommandText
+    $adp = New-Object System.Data.SqlClient.SqlDataAdapter $sqlcmd
+    $data = New-Object System.Data.DataSet
+    $records = $adp.Fill($data)
+
+    # Close the connection
+    $sqlconn.Close()
+
+    # Check for errors in the output
+    if ($data.HasErrors)
+    {
+        Write-Error "DataSet has errors"
+    }
+
+    $data.Tables.Rows | ConvertTo-CSV
+}
+
+
 # Functions
 
 Register-Automation -Name mssql.backup_check -ScriptBlock {
@@ -74,79 +120,11 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
 
     process
     {
-        $checkScript = {
-            param(
-                [Parameter(Mandatory=$true)]
-                [ValidateNotNullOrEmpty()]
-                [string]$Name,
-
-                [Parameter(Mandatory=$true)]
-                [ValidateNotNullOrEmpty()]
-                [string]$ConnectionString,
-
-                [Parameter(Mandatory=$true)]
-                [ValidateNotNullOrEmpty()]
-                [string]$CommandText
-            )
-
-            # Establish connection to the SQL instance
-            Write-Information "Connecting to instance: $Name"
-            $sqlconn = New-Object System.Data.SqlClient.SqlConnection
-            $sqlconn.ConnectionString = $ConnectionString
-            $sqlconn.Open()
-
-            # Perform query against the instance
-            $sqlcmd = $sqlconn.CreateCommand()
-            $sqlcmd.CommandText = $CommandText
-            $adp = New-Object System.Data.SqlClient.SqlDataAdapter $sqlcmd
-            $data = New-Object System.Data.DataSet
-            $records = $adp.Fill($data)
-
-            # Close the connection
-            $sqlconn.Close()
-
-            # Check for errors in the output
-            if ($data.HasErrors)
-            {
-                Write-Error "DataSet has errors"
-            }
-
-            $data.Tables.Rows | ForEach-Object {
-                $last_backup = $_.last_backup
-                $current_datetime = $_.current_datetime
-
-                # Make sure the last backup is a string
-                if ($null -ne $last_backup -and $last_backup -is [DateTime])
-                {
-                    $last_backup = $last_backup.ToString("o")
-                }
-
-                # Make sure the current datetime is a string
-                if ($null -ne $current_datetime -and $current_datetime -is [DateTime])
-                {
-                    $current_datetime = $current_datetime.ToString("o")
-                }
-
-                [PSCustomObject]@{
-                    database_name = $_.database_name
-                    state = $_.state
-                    state_desc = $_.state_desc
-                    recovery_model = $_.recovery_model
-                    recovery_model_desc = $_.recovery_model_desc
-                    backup_type = $_.backup_type
-
-                    # Add ___ to avoid powershell converting these dates
-                    last_backup = "___" + $last_backup
-                    current_datetime = "___" + $current_datetime
-                }
-            } | ConvertTo-Json
-        }
-
         Write-Information "Connection: $Name"
 
         # Invoke command parameters
         $invokeArgs = @{
-            ScriptBlock = $checkScript
+            ScriptBlock = $queryScript
             ArgumentList = $Name,$ConnectionString,$backupCheck
         }
 
@@ -163,7 +141,7 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
         $result = Invoke-Command @invokeArgs
 
         # Deserialise the database status
-        $dbBackupRecords = $result | ConvertFrom-Json
+        $dbBackupRecords = $result | ConvertFrom-CSV
 
         # Convert the results to something easier to work with
         $dbBackupState = @{}
@@ -205,12 +183,11 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
 
             # Extract DateTime values
             $last_backup = $null
-            $last_backup_str = $dbState.last_backup.TrimStart("_")
-            if (![string]::IsNullOrEmpty($last_backup_str))
+            if (![string]::IsNullOrEmpty($dbState.last_backup))
             {
-                $last_backup = [DateTime]::Parse($last_backup_str)
+                $last_backup = [DateTime]::Parse($dbState.last_backup)
             }
-            $now = [DateTime]::Parse($dbState.current_datetime.TrimStart("_"))
+            $now = [DateTime]::Parse($dbState.current_datetime)
 
             # Extract specific types of backups
             switch ($_.backup_type)
@@ -309,4 +286,4 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
         }
     }
 }
- 
+
