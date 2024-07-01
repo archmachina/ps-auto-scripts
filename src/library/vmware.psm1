@@ -107,7 +107,7 @@ Register-Automation -Name vmware.host_health -ScriptBlock {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
         [AllowEmptyCollection()]
         $VMHosts,
 
@@ -199,6 +199,93 @@ Register-Automation -Name vmware.host_health -ScriptBlock {
             }
         } else {
             Write-Information "No hosts with triggered alarms"
+        }
+    }
+}
+
+Register-Automation -Name vmware.cluster_health -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [AllowEmptyCollection()]
+        $Clusters,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$IncludeAcknowledged = $false
+    )
+
+    process
+    {
+        # Check for clusters with alerts
+        Write-Information "Checking for clusters with 'overall status' issues"
+        $errClusters = $Clusters | Where-Object {$_.ExtensionData.OverallStatus.ToString() -ne "green"}
+        $count = ($errClusters | Measure-Object).Count
+        if ($count -gt 0)
+        {
+            New-Notification -Title "Clusters with status issues" -ScriptBlock {
+                $errClusters | Select-Object -Property Name,@{N="OverallStatus";E={$_.ExtensionData.OverallStatus.ToString()}} |
+                    Format-Table
+            }
+        } else {
+            Write-Information "No clusters with overall status issues"
+        }
+
+        # Check for config status
+        Write-Information "Checking for clusters with config issues"
+        $errCLusters = $Clusters | Where-Object {$_.ExtensionData.ConfigStatus.ToString() -ne "green"}
+        $count = ($errClusters | Measure-Object).Count
+        if ($count -gt 0)
+        {
+            New-Notification -Title "Clusters with config issues" -ScriptBlock {
+                $errClusters | Select-Object -Property Name,@{N="ConfigStatus";E={$_.ExtensionData.ConfigStatus.ToString()}} |
+                    Format-Table
+            }
+        } else {
+            Write-Information "No clusters with config status issues"
+        }
+
+        # Check for triggered alarms
+        Write-Information "Checking for triggered alarms for clusters"
+        $allAlarms = $Clusters | ForEach-Object {
+            $cluster = $_
+
+            $cluster.ExtensionData.TriggeredAlarmState | ForEach-Object {
+                $state = $_
+
+                $names = Get-View -Id $state.Alarm |
+                    ForEach-Object { $_.Info.Name } |
+                    Select-Object -Unique |
+                    Split-StringLength -WrapLength 60 |
+                    Out-String
+
+                [PSCustomObject]@{
+                    Name = $cluster.Name
+                    Description = $names
+                    Time = $state.Time
+                    Acknowledged = $state.Acknowledged
+                    AcknowledgedByUser = $state.AcknowledgedByUser
+                }
+            }
+        }
+
+        # Filter out acknowledged alarms, if required
+        if (-not $IncludeAcknowledged)
+        {
+            $allAlarms = $allAlarms | Where-Object { -not $_.Acknowledged }
+        }
+
+        # Notification on current alarms for clusters
+        if (($allAlarms | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Cluster Alarms" -ScriptBlock {
+                $allAlarms |
+                    Format-Table -Wrap -Property Name,Time,Acknowledged,AcknowledgedByUser,Description |
+                    Out-String -Width 300
+            }
+        } else {
+            Write-Information "No clusters with triggered alarms"
         }
     }
 }
