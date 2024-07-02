@@ -696,8 +696,8 @@ Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
 
         if (($fragDatabases | Measure-Object).Count -gt 0)
         {
-            New-Notification -Title "Databases with high fragmentation:" -ScriptBlock {
-                Write-Information "Databases with high fragmentation:"
+            New-Notification -Title "Databases with high fragmentation ($Name):" -ScriptBlock {
+                Write-Information "Databases with high fragmentation ($Name):"
                 $fragDatabases | Format-Table | Out-String -Width 300
             }
         }
@@ -706,8 +706,8 @@ Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
         $fragIndexes = $records | Where-Object { $_.avg_frag_pct -ge $FragThreshold }
         if (($fragIndexes | Measure-Object).Count -gt 0)
         {
-            New-Notification -Title "Indexes with high fragmentation:" -ScriptBlock {
-                Write-Information "Indexes with high fragmentation:"
+            New-Notification -Title "Indexes with high fragmentation ($Name):" -ScriptBlock {
+                Write-Information "Indexes with high fragmentation ($Name):"
                 $fragIndexes | Format-Table | Out-String -Width 300
             }
         }
