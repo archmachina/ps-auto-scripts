@@ -73,6 +73,45 @@ WHERE
 	mpld.start_time > DATEADD(HOUR, {0}, GETDATE())
 "@
 
+$fragmentationCheck = @"
+CREATE TABLE #FragmentationCapture
+(
+	database_name nvarchar(128),
+	schema_name nvarchar(128),
+	table_name nvarchar(128),
+	index_name nvarchar(128),
+	avg_frag_pct float,
+	page_count bigint
+);
+
+INSERT INTO #FragmentationCapture
+exec SP_MSforeachdb @command1 = '
+IF ''?'' NOT IN (''master'', ''model'', ''msdb'', ''tempdb'')
+BEGIN
+use [?]
+SELECT
+    DB_NAME(DB_ID()) as database_name,
+    S.name as schema_name,
+    T.name as table_name,
+    I.name as index_name,
+    ROUND(DDIPS.avg_fragmentation_in_percent, 2) as avg_frag_pct,
+    DDIPS.page_count
+FROM sys.dm_db_index_physical_stats (DB_ID(), NULL, NULL, NULL, NULL) AS DDIPS
+INNER JOIN sys.tables T on T.object_id = DDIPS.object_id
+INNER JOIN sys.schemas S on T.schema_id = S.schema_id
+INNER JOIN sys.indexes I ON I.object_id = DDIPS.object_id
+    AND DDIPS.index_id = I.index_id
+WHERE DDIPS.database_id = DB_ID()
+    and I.name is not null
+ORDER BY DDIPS.avg_fragmentation_in_percent desc
+END
+'
+
+SELECT
+	*
+FROM #FragmentationCapture
+"@
+
 $queryScript = {
     param(
         [Parameter(Mandatory=$true)]
@@ -102,6 +141,7 @@ $queryScript = {
     # Perform query against the instance
     $sqlcmd = $sqlconn.CreateCommand()
     $sqlcmd.CommandText = $CommandText
+    $sqlcmd.CommandTimeout = 360
     $adp = New-Object System.Data.SqlClient.SqlDataAdapter $sqlcmd
     $data = New-Object System.Data.DataSet
     $records = $adp.Fill($data)
@@ -545,6 +585,130 @@ Register-Automation -Name mssql.maint_plan_status -ScriptBlock {
             New-Notification -Title "Maint plan task errors found ($Name)" -ScriptBlock {
                 Write-Information "Maint plan task errors found ($Name):"
                 $errorSummary | Format-Table | Out-String -Width 300
+            }
+        }
+    }
+}
+
+Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ConnectionString,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExecuteFrom = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$PageMinimum = 1000,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$FragThreshold = 80,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [bool]$StatusReport = $false
+    )
+
+    process
+    {
+        Write-Information "Connection: $Name"
+
+        # Invoke command parameters
+        $invokeArgs = @{
+            ScriptBlock = $queryScript
+            ArgumentList = $Name,$ConnectionString,$fragmentationCheck
+        }
+
+        # Determine what machine to run the check from
+        if ([string]::IsNullOrEmpty($ExecuteFrom))
+        {
+            Write-Information "Executing locally"
+        } else {
+            $invokeArgs["ComputerName"] = $ExecuteFrom
+            Write-Information "Executing from $ExecuteFrom"
+        }
+
+        # Invoke check scripts
+        $result = Invoke-Command @invokeArgs
+
+        # Deserialise the records and transform
+        $records = $result | ConvertFrom-CSV | ForEach-Object {
+            # Perform any transforms on the record
+            [PSCustomObject]@{
+                database_name = $_.database_name | Limit-StringLength -Length 40
+                schema_name = $_.schema_name | Limit-StringLength -Length 40
+                table_name = $_.table_name | Limit-StringLength -Length 40
+                index_name = $_.index_name | Limit-StringLength -Length 40
+                avg_frag_pct = [float]$_.avg_frag_pct
+                page_count = [int]$_.page_count
+            }
+        }
+
+        Write-Information ("Found {0} fragmentation records" -f ($records | Measure-Object).Count)
+
+        # Filter out entries with low page count
+        $records = $records | Where-Object { $_.page_count -ge $PageMinimum }
+        Write-Information ("{0} records after page count filter" -f ($records | Measure-Object).Count)
+
+        # Create a per database summary
+        $databaseSummary = $records | Group-Object -Property database_name | ForEach-Object {
+            $group = $_
+
+            # Determine the average fragmentation for the database
+            $stat = $_.Group | ForEach-Object { $_.avg_frag_pct } | Measure-Object -Average -Maximum
+            $avg_frag_pct = [Math]::Round($stat.Average, 2)
+            $max_frag_pct = $stat.Maximum
+
+            [PSCustomObject]@{
+                database_name = $_.Group[0].database_name
+                avg_frag_pct = [float]$avg_frag_pct
+                max_frag_pct = [float]$max_frag_pct
+            }
+        }
+
+        # Log the database summary and detail
+        $capture = New-Capture
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Database average fragmentation:"
+            $databaseSummary | Format-Table | Out-String -Width 300
+        }
+
+        # Just display everything, if this is a status report
+        if ($StatusReport)
+        {
+            New-Notification -Title "Database Fragmentation Status Report ($Name)" -Body $capture.ToString()
+            return
+        }
+
+        # Create a notification for databases over the fragmentation average
+        $fragDatabases = $databaseSummary | Where-Object {
+            $_.avg_frag_pct -ge $FragThreshold -or $_.max_frag_pct -ge $FragThreshold
+        }
+
+        if (($fragDatabases | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Databases with high fragmentation:" -ScriptBlock {
+                Write-Information "Databases with high fragmentation:"
+                $fragDatabases | Format-Table | Out-String -Width 300
+            }
+        }
+
+        # Create a notification for indexes over the threshold
+        $fragIndexes = $records | Where-Object { $_.avg_frag_pct -ge $FragThreshold }
+        if (($fragIndexes | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Indexes with high fragmentation:" -ScriptBlock {
+                Write-Information "Indexes with high fragmentation:"
+                $fragIndexes | Format-Table | Out-String -Width 300
             }
         }
     }
