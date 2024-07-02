@@ -54,6 +54,25 @@ WHERE
 ORDER BY run_datetime ASC
 "@
 
+
+$maintPlanCheck = @"
+SELECT
+    mpp.name as 'plan_name',
+    mps.subplan_name as 'subplan_name',
+    --mpld.command,
+    mpld.start_time,
+    mpld.end_time,
+    CAST(mpld.succeeded as INTEGER) as succeeded,
+    mpld.error_message
+FROM msdb.dbo.sysmaintplan_log as mpl
+INNER JOIN msdb.dbo.sysmaintplan_subplans as mps ON mpl.subplan_id = mps.subplan_id
+INNER JOIN msdb.dbo.sysmaintplan_plans as mpp ON mps.plan_id = mpp.id
+INNER JOIN msdb.dbo.sysmaintplan_logdetail as mpld on mpl.task_detail_id = mpld.task_detail_id
+WHERE
+	mpld.end_time IS NOT NULL AND
+	mpld.start_time > DATEADD(HOUR, {0}, GETDATE())
+"@
+
 $queryScript = {
     param(
         [Parameter(Mandatory=$true)]
@@ -412,6 +431,119 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
         {
             New-Notification -Title "Job errors found ($Name)" -ScriptBlock {
                 Write-Information "Job errors found ($Name):"
+                $errorSummary | Format-Table | Out-String -Width 300
+            }
+        }
+    }
+}
+
+Register-Automation -Name mssql.maint_plan_status -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ConnectionString,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExecuteFrom = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 1,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [bool]$StatusReport = $false
+    )
+
+    process
+    {
+        Write-Information "Connection: $Name"
+
+        # Query age must be positive
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # Invoke command parameters
+        $invokeArgs = @{
+            ScriptBlock = $queryScript
+            ArgumentList = $Name,$ConnectionString,($maintPlanCheck -f (-$AgeHours))
+        }
+
+        # Determine what machine to run the check from
+        if ([string]::IsNullOrEmpty($ExecuteFrom))
+        {
+            Write-Information "Executing locally"
+        } else {
+            $invokeArgs["ComputerName"] = $ExecuteFrom
+            Write-Information "Executing from $ExecuteFrom"
+        }
+
+        # Invoke check scripts
+        $result = Invoke-Command @invokeArgs
+
+        # Deserialise the records and transform
+        $records = $result | ConvertFrom-CSV | ForEach-Object {
+            # Perform any transforms on the record
+            $error_message = ""
+            if (![string]::IsNullOrEmpty($_.error_message))
+            {
+                $error_message = $_.error_message
+            }
+
+            [PSCustomObject]@{
+                plan_name = $_.plan_name
+                subplan_name = $_.subplan_name
+                start_time = [DateTime]::Parse($_.start_time)
+                end_time = [DateTime]::Parse($_.end_time)
+                succeeded = [int]$_.succeeded
+                error_message = $error_message
+            }
+        }
+
+        Write-Information ("Found {0} maintenance plan records" -f ($records | Measure-Object).Count)
+
+        # Group objects by plan,subplan and succeeded
+        # ignore error message as we just want the last error message
+        $summary = $records | Sort-Object -Property start_time -Descending |
+            Group-Object -Property plan_name,subplan_name,succeeded |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    plan_name = $_.Group[0].plan_name | Limit-StringLength -Length 40
+                    subplan_name = $_.Group[0].subplan_name | Limit-StringLength -Length 40
+                    succeeded = $_.Group[0].succeeded
+                    count = $_.Count
+                    last_run = $_.Group[0].start_time
+                    error_message = $_.Group[0].error_message | Limit-StringLength -Length 80
+                }
+            }
+
+        Write-Information ("Grouped to {0} maint plan summaries" -f ($summary | Measure-Object).Count)
+
+        # Log the maint plan status
+        $capture = New-Capture
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Maint Plan Task Status Report ($Name) (last $AgeHours hours):"
+            $summary | Format-Table | Out-String -Width 300
+        }
+
+        # Just display everything, if this is a status report
+        if ($StatusReport)
+        {
+            New-Notification -Title "Maint Plan Task Status Report ($Name)" -Body $capture.ToString()
+            return
+        }
+
+        # Send a notification if any maintenance plans have error statuses
+        $errorSummary = $summary | Where-Object { $_.succeeded -ne 1 }
+        if (($errorSummary | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Maint plan task errors found ($Name)" -ScriptBlock {
+                Write-Information "Maint plan task errors found ($Name):"
                 $errorSummary | Format-Table | Out-String -Width 300
             }
         }
