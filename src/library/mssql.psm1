@@ -124,7 +124,11 @@ $queryScript = {
 
         [Parameter(Mandatory=$true)]
         [ValidateNotNullOrEmpty()]
-        [string]$CommandText
+        [string]$CommandText,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [int]$CommandTimeout
     )
 
     # Settings
@@ -199,7 +203,11 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [bool]$StatusReport = $false
+        [bool]$StatusReport = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$CommandTimeout = 360
     )
 
     process
@@ -209,7 +217,7 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
         # Invoke command parameters
         $invokeArgs = @{
             ScriptBlock = $queryScript
-            ArgumentList = $Name,$ConnectionString,$backupCheck
+            ArgumentList = $Name,$ConnectionString,$backupCheck,$CommandTimeout
         }
 
         # Determine what machine to run the check from
@@ -392,7 +400,11 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [bool]$StatusReport = $false
+        [bool]$StatusReport = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$CommandTimeout = 360
     )
 
     process
@@ -405,7 +417,7 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
         # Invoke command parameters
         $invokeArgs = @{
             ScriptBlock = $queryScript
-            ArgumentList = $Name,$ConnectionString,($jobCheck -f (-$AgeHours))
+            ArgumentList = $Name,$ConnectionString,($jobCheck -f (-$AgeHours)),$CommandTimeout
         }
 
         # Determine what machine to run the check from
@@ -498,7 +510,11 @@ Register-Automation -Name mssql.maint_plan_status -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [bool]$StatusReport = $false
+        [bool]$StatusReport = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$CommandTimeout = 360
     )
 
     process
@@ -511,7 +527,7 @@ Register-Automation -Name mssql.maint_plan_status -ScriptBlock {
         # Invoke command parameters
         $invokeArgs = @{
             ScriptBlock = $queryScript
-            ArgumentList = $Name,$ConnectionString,($maintPlanCheck -f (-$AgeHours))
+            ArgumentList = $Name,$ConnectionString,($maintPlanCheck -f (-$AgeHours)),$CommandTimeout
         }
 
         # Determine what machine to run the check from
@@ -615,7 +631,11 @@ Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [bool]$StatusReport = $false
+        [bool]$StatusReport = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$CommandTimeout = 360
     )
 
     process
@@ -625,7 +645,7 @@ Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
         # Invoke command parameters
         $invokeArgs = @{
             ScriptBlock = $queryScript
-            ArgumentList = $Name,$ConnectionString,$fragmentationCheck
+            ArgumentList = $Name,$ConnectionString,$fragmentationCheck,$CommandTimeout
         }
 
         # Determine what machine to run the check from
