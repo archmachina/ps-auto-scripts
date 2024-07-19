@@ -35,7 +35,11 @@ Register-Automation -Name prtg.alert_history -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [switch]$SkipCertificateCheck = $false
+        [switch]$SkipCertificateCheck = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$AlwaysReport = $false
     )
 
     process
@@ -99,7 +103,10 @@ Register-Automation -Name prtg.alert_history -ScriptBlock {
         } *>&1 | Copy-ToCapture -Capture $capture
 
         # Send notification with alert history
-        New-Notification -Title alert_history -Body $capture.ToString()
+        if ($AlwaysReport -or ($events | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title alert_history -Body $capture.ToString()
+        }
     }
 }
 
@@ -124,7 +131,11 @@ Register-Automation -Name prtg.alert_summary -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [int[]]$Statuses = @(5,4)
+        [int[]]$Statuses = @(5,4),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$AlwaysReport = $false
     )
 
     process
@@ -178,7 +189,10 @@ Register-Automation -Name prtg.alert_summary -ScriptBlock {
         } *>&1 | Copy-ToCapture -Capture $capture
 
         # Send notification with alert summary
-        New-Notification -Title alert_summary -Body $capture.ToString()
+        if ($AlwaysReport -or ($sensors | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title alert_summary -Body $capture.ToString()
+        }
     }
 }
 
