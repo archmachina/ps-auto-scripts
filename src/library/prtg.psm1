@@ -84,14 +84,16 @@ Register-Automation -Name prtg.alert_history -ScriptBlock {
             Group-Object -Property name,device,sensor,status | ForEach-Object {
 
                 # Latest occurance of the alert state
-                $latest = ($_.Group | Sort-Object -Property datetime -Descending | Select-Object -First 1).datetime
+                $latest_raw = ($_.Group | Sort-Object -Property datetime_raw -Descending | Select-Object -First 1).datetime_raw
+                $latest = [DateTime]::FromOADate($latest_raw)
 
                 [PSCustomObject]@{
                     Device = ($_.Group[0].device | Limit-StringLength -Length 40)
                     Sensor = ($_.Group[0].sensor | Limit-StringLength -Length 30)
                     Status = $_.Group[0].status
                     Count = $_.Count
-                    Latest = $latest
+                    Latest = $latest.ToString()
+                    LatestAgeHours = [Math]::Round(([DateTime]::Now - $latest).TotalHours, 2)
                 }
             } | Sort-Object -Property Device,Sensor
 
@@ -99,7 +101,7 @@ Register-Automation -Name prtg.alert_history -ScriptBlock {
         $capture = New-Capture
         & {
             Write-Information ("PRTG warning and down sensors for the last {0} days:" -f $AgeDays)
-            $events | Format-Table -Property Device,Sensor,Status,Count,Latest -Wrap
+            $events | Format-Table -Property Device,Sensor,Status,Count,Latest,LatestAgeHours -Wrap
         } *>&1 | Copy-ToCapture -Capture $capture
 
         # Send notification with alert history
