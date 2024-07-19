@@ -83,7 +83,7 @@ Register-Automation -Name active_directory.inactive_users -ScriptBlock {
         $warningUsers = $workingUsers | Where-Object {
             $_.LastLogon -lt ([DateTime]::Now.AddDays(-($WarningDays))) -and
             $_.LastLogon -ge ([DateTime]::Now.AddDays(-($DisableDays)))
-        }
+        } | Sort-Object -Property Age -Descending
         $warningCount = ($warningUsers | Measure-Object).Count
 
         # Log any users nearing the warning threshold
@@ -102,7 +102,7 @@ Register-Automation -Name active_directory.inactive_users -ScriptBlock {
         # Identify users who should be disabled
         $disableUsers = $workingUsers | Where-Object {
             $_.LastLogon -lt ([DateTime]::Now.AddDays(-($DisableDays)))
-        }
+        } | Sort-Object -Property Age -Descending
         $disableCount = ($disableUsers | Measure-Object).Count
 
         # Disable user accounts
