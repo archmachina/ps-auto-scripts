@@ -45,6 +45,7 @@ Register-Automation -Name active_directory.inactive_users -ScriptBlock {
         $DisableDays = [Math]::Abs($DisableDays)
         Write-Information "WarningDays: $WarningDays"
         Write-Information "DisableDays: $DisableDays"
+        Write-Information "Note: Using created date when no last logon present"
 
         # Filter for enabled users and convert to a more useful object
         $workingUsers = $Users | Where-Object {
@@ -53,6 +54,11 @@ Register-Automation -Name active_directory.inactive_users -ScriptBlock {
 
             # Make sure where is a value for LastLogon
             $lastLogon = $_.lastLogonDate
+            if ($null -eq $lastLogon -or [DateTime]::MinValue -eq $lastLogon)
+            {
+                $lastLogon = $_.Created
+            }
+
             if ($null -eq $lastLogon)
             {
                 $lastLogon = [DateTime]::MinValue
