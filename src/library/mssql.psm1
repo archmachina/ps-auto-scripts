@@ -145,7 +145,7 @@ $queryScript = {
     # Perform query against the instance
     $sqlcmd = $sqlconn.CreateCommand()
     $sqlcmd.CommandText = $CommandText
-    $sqlcmd.CommandTimeout = 360
+    $sqlcmd.CommandTimeout = $CommandTimeout
     $adp = New-Object System.Data.SqlClient.SqlDataAdapter $sqlcmd
     $data = New-Object System.Data.DataSet
     $records = $adp.Fill($data)
