@@ -290,3 +290,63 @@ Register-Automation -Name vmware.cluster_health -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.failed_logins -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [AllowEmptyCollection()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$MaxSamples = 100000,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$FailureThreshold = 3
+    )
+
+    process
+    {
+        # Make sure the age is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # Calculate the start time for event collection
+        $start = [DateTime]::Now.AddHours(-$AgeHours)
+
+        # Process failed logins per vcenter server
+        $Servers | ForEach-Object {
+            $server = $_
+
+            # Capture failed login events
+            $events = Get-VIEvent -Server $server -Start $start -MaxSamples $MaxSamples |
+                Where-Object { $_ -is "VMware.Vim.EventEx" -and $_.EventTypeId -eq "com.vmware.sso.LoginFailure" }
+
+            # Group by username to capture total failed logins
+            $failedUsers = $events | Group-Object -Property UserName
+            Write-Information "Failed logins over the last $Agehours hours ($Server):"
+            $failedUsers | Format-Table -Property Name,Count
+
+            # Identify users over the threshold
+            $alertUsers = $failedUsers | Where-Object { $_.Count -ge $FailureThreshold }
+
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Failed logins over threshold ($FailureThreshold) over the last $Agehours hours ($Server):"
+                $alertUsers | Format-Table -Property Name,Count
+            }
+
+            # Send a notification if there are any alert users
+            if (($alertUsers | Measure-Object).Count -gt 0)
+            {
+                New-Notification -Title "Failed logins over threshold - last $AgeHours hours ($Server)" -Body ($capture.ToString())
+            }
+        }
+    }
+}
+
