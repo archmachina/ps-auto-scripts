@@ -350,3 +350,55 @@ Register-Automation -Name vmware.failed_logins -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.event_history -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [AllowEmptyCollection()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$MaxSamples = 100000,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$Types = @("Error", "Warning")
+    )
+
+    process
+    {
+        # Make sure the age is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # Calculate the start time for event collection
+        $start = [DateTime]::Now.AddHours(-$AgeHours)
+
+        # Process events per vcenter server
+        $Servers | ForEach-Object {
+            $server = $_
+
+            # Capture relevant events
+            $events = Get-VIEvent -Server $server -Start $start -MaxSamples $MaxSamples -Types $Types |
+                Where-Object { -not [string]::IsNullOrEmpty($_.FullFormattedMessage) }
+
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "vCenter events over the last $AgeHours hours ($Server):"
+                $events | Format-Table -Property CreatedTime,FullFormattedMessage | Out-String -Width 300
+            }
+
+            # Send a notification if there are any events
+            if (($events | Measure-Object).Count -gt 0)
+            {
+                New-Notification -Title "vCenter events over the last $AgeHours hours ($Server)" -Body ($capture.ToString())
+            }
+        }
+    }
+}
+
