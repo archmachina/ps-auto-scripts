@@ -323,22 +323,28 @@ Register-Automation -Name vmware.failed_logins -ScriptBlock {
         $Servers | ForEach-Object {
             $server = $_
 
-            # Capture failed login events
-            $events = Get-VIEvent -Server $server -Start $start -MaxSamples $MaxSamples |
-                Where-Object { $_ -is "VMware.Vim.EventEx" -and $_.EventTypeId -eq "com.vmware.sso.LoginFailure" }
+            # Generate a failed login summary
+            $summary = Get-VIEvent -Server $server -Start $start -MaxSamples $MaxSamples | Where-Object {
+                ($_ -is "VMware.Vim.EventEx" -and $_.EventTypeId -eq "com.vmware.sso.LoginFailure") -or
+                ($_ -is "Vmware.Vim.BadUsernameSessionEvent")
+            } | Group-Object -Property UserName | ForEach-Object {
+                [PSCustomObject]@{
+                    Count = $_.Count
+                    UserName = $_.Group[0].UserName
+                }
+            }
 
-            # Group by username to capture total failed logins
-            $failedUsers = $events | Group-Object -Property UserName
+            # Display all failed logins
             Write-Information "Failed logins over the last $Agehours hours ($Server):"
-            $failedUsers | Format-Table -Property Name,Count
+            $summary | Format-Table -Property UserName,Count
 
             # Identify users over the threshold
-            $alertUsers = $failedUsers | Where-Object { $_.Count -ge $FailureThreshold }
+            $alertUsers = $summary | Where-Object { $_.Count -ge $FailureThreshold }
 
             $capture = New-Capture
             Invoke-CaptureScript -Capture $capture -ScriptBlock {
                 Write-Information "Failed logins over threshold ($FailureThreshold) over the last $Agehours hours ($Server):"
-                $alertUsers | Format-Table -Property Name,Count
+                $alertUsers | Format-Table -Property UserName,Count
             }
 
             # Send a notification if there are any alert users
