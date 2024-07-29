@@ -374,7 +374,11 @@ Register-Automation -Name vmware.event_history -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNullOrEmpty()]
-        [string[]]$Types = @("Error", "Warning")
+        [string[]]$Types = @("Error", "Warning"),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$GroupMessage = $false
     )
 
     process
@@ -396,7 +400,22 @@ Register-Automation -Name vmware.event_history -ScriptBlock {
             $capture = New-Capture
             Invoke-CaptureScript -Capture $capture -ScriptBlock {
                 Write-Information "vCenter events over the last $AgeHours hours ($Server):"
-                $events | Format-Table -Property CreatedTime,FullFormattedMessage | Out-String -Width 300
+                if ($GroupMessage)
+                {
+                    $events | Group-Object -Property FullFormattedMessage | ForEach-Object {
+                        [PSCustomObject]@{
+                            Count = $_.Count
+                            Message = $_.Name
+                        }
+                    } | Format-Table Count,Message | Out-String -Width 300
+                } else {
+                    $events | ForEach-Object {
+                        [PSCustomObject]@{
+                            Time = $_.CreatedTime
+                            Message = $_.FullFormattedMessage
+                        }
+                    } | Format-Table -Property Time,Message | Out-String -Width 300
+                }
             }
 
             # Send a notification if there are any events
