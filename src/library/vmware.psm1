@@ -514,12 +514,13 @@ Register-Automation -Name vmware.failed_logins -ScriptBlock {
                 [PSCustomObject]@{
                     Count = $_.Count
                     UserName = $_.Group[0].UserName
+                    Message = $_.Group[0].FullFormattedMessage
                 }
             }
 
             # Display all failed logins
             Write-Information "Failed logins over the last $Agehours hours ($Server):"
-            $summary | Format-Table -Property UserName,Count
+            $summary | Format-Table -Property UserName,Count,Message
 
             # Identify users over the threshold
             $alertUsers = $summary | Where-Object { $_.Count -ge $FailureThreshold }
@@ -527,7 +528,7 @@ Register-Automation -Name vmware.failed_logins -ScriptBlock {
             $capture = New-Capture
             Invoke-CaptureScript -Capture $capture -ScriptBlock {
                 Write-Information "Failed logins over threshold ($FailureThreshold) over the last $Agehours hours ($Server):"
-                $alertUsers | Format-Table -Property UserName,Count
+                $alertUsers | Format-Table -Property UserName,Count,Message
             }
 
             # Send a notification if there are any alert users
