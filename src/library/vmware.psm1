@@ -20,6 +20,189 @@ Import-Module AutomationUtils
 
 # Functions
 
+Function Replace-StringNewlines
+{
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true,ValueFromPipeline)]
+        [ValidateNotNull()]
+        [string]$Value,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [string]$Replacement
+    )
+
+    process
+    {
+        $Value.Replace([Environment]::Newline, $Replacement).Replace("`n", $Replacement).Replace("`r", $Replacement)
+    }
+}
+
+Function Add-ObjToDict
+{
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [HashTable]$Dict,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Key,
+
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        [AllowNull()]
+        $Obj,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [AllowEmptyCollection()]
+        [string[]]$IncludeType = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [HashTable]$VisitList = @{},
+
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        #[ValidateNotNullOrEmpty()]
+        [string[]]$ExcludePath = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$MaxDepth = 3
+    )
+
+    process
+    {
+        $MaxDepth--
+
+        # Quit here if this is an excluded path
+        if (($ExcludePath | Where-Object { $Key -match $_ } | Measure-Object).Count -gt 0)
+        {
+            return
+        }
+
+        # Convert a null to empty string
+        if ($null -eq $Obj)
+        {
+            $Dict[$Key] = ""
+
+            return
+        }
+
+        # Record the object in the visit list
+        # Only used if we're going to descending in to the object
+        $VisitList[$Obj] = $Obj
+
+        if ($Obj -is [System.Enum])
+        {
+            $Dict[$Key] = $Obj | Out-String | Replace-StringNewlines -Replacement " "
+
+            return
+        }
+
+        # If obj is a container, descend in to it
+        if ([System.Collections.ICollection].IsAssignableFrom($Obj.GetType()))
+        {
+            $index = 0
+            $Obj | ForEach-Object {
+                if ($_ -notin $VisitList -and $MaxDepth -gt 0)
+                {
+                    Add-ObjToDict -Dict $Dict -Key ($Key + "." + $index) -Obj $_ -IncludeType $IncludeType -VisitList $VisitList -ExcludePath $ExcludePath -MaxDepth $MaxDepth
+                }
+
+                $index++
+            }
+
+            return
+        }
+
+        # If the type matches a type filter, then process the properties
+        $objType = $Obj.GetType().FullName
+        if (($IncludeType | Where-Object { $objType -match $_ } | Measure-Object).Count -gt 0)
+        {
+            $Obj.PSObject.Properties | ForEach-Object {
+                $name = $_.Name
+                $value = $_.Value
+
+                if ($value -notin $VisitList -and $MaxDepth -gt 0)
+                {
+                    Add-ObjToDict -Dict $Dict -Key ($Key + "." + $name) -Obj $value -IncludeType $IncludeType -VisitList $VisitList -ExcludePath $ExcludePath -MaxDepth $MaxDepth
+                }
+            }
+
+            return
+        }
+
+        # Unknown type and not collection, so just convert to string
+        $Dict[$Key] = $Obj | Out-String | Replace-StringNewlines -Replacement " "
+    }
+}
+
+Function Get-VMSpec
+{
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true,ValueFromPipeline)]
+        [ValidateNotNull()]
+        $VM
+    )
+
+    process
+    {
+        $vmSpec = @{}
+
+        # Add VM network information
+        $index = 0
+        $vm | Get-NetworkAdapter | ForEach-Object {
+            Add-ObjToDict -Dict $vmSpec -Key "network.$index" -Obj $_ -IncludeType @("^VMware.*") -ExcludePath @(
+                "^network\..*.Parent"
+            )
+
+            $index++
+        }
+
+        # Add VM harddisk information
+        $index = 0
+        $vm | Get-HardDisk | ForEach-Object {
+            Add-ObjToDict -Dict $vmSpec -Key "harddisk.$index" -Obj $_ -IncludeType @("^VMware.*") -ExcludePath @(
+                "^harddisk\..*.Parent"
+            )
+        }
+
+        # Add guest information
+        Add-ObjToDict -Dict $vmSpec -Key "guest" -Obj $vm.ExtensionData.Guest -IncludeType @("^VMware.*")
+
+        # Add config information
+        Add-ObjToDict -Dict $vmSpec -Key "config" -Obj $vm.ExtensionData.Config -IncludeType @("^VMware.*") -ExcludePath @(
+            "^config.ExtraConfig\..*",
+            "^config.VmxConfigChecksum"
+        )
+
+        # Add extra config information
+        $vm.ExtensionData.Config.ExtraConfig | ForEach-Object {
+            Add-ObjToDict -Dict $vmSpec -Key ("config.ExtraConfig." + $_.Key) -Obj $_.Value -ExcludePath @(
+                "^config.ExtraConfig.guestinfo.appInfo"
+            )
+        }
+
+        # Add VM resource config
+        Add-ObjToDict -Dict $vmSpec -Key "resourceconfig" -Obj $vm.ExtensionData.ResourceConfig -IncludeType @("^VMware.*")
+
+        # Add VM resourcepool config
+        Add-ObjToDict -Dict $vmSpec -Key "resourcepool" -Obj ($vm | Get-ResourcePool) -IncludeType @("^VMware.*") -ExcludePath @(
+            "^resourcepool.ExtensionData",
+            "^resourcepool.CustomFields",
+            "^resourcepool.Parent"
+        )
+
+        $vmSpec
+    }
+}
+
 Register-Automation -Name vmware.snapshot_cleanup -ScriptBlock {
     [CmdletBinding()]
     param(
@@ -423,6 +606,103 @@ Register-Automation -Name vmware.event_history -ScriptBlock {
             {
                 New-Notification -Title "vCenter events over the last $AgeHours hours ($Server)" -Body ($capture.ToString())
             }
+        }
+    }
+}
+
+Register-Automation -Name vmware.vm_compare_config -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vms,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$CheckPath,
+
+        [Parameter(Mandatory=$false)]
+        [AllowEmptyCollection()]
+        [ValidateNotNull()]
+        [string[]]$IgnoreFilter = @()
+    )
+
+    process
+    {
+        # For each VM, capture the current configuration
+        # and compare against the existing configuration
+        # on disk, if any
+
+        $vms | ForEach-Object {
+            $vm = $_
+
+            # Capture current VM configuration
+            Write-Information "Capturing VM configuration for $vm"
+            $spec = Get-VMSpec -VM $vm
+
+            # Remove any keys that match an ignore filter
+            # Duplicate the key list before removing keys from the dictionary
+            $specKeys = $spec.Keys | ForEach-Object { $_ }
+            $specKeys | ForEach-Object {
+                $key = $_
+
+                if (($IgnoreFilter | Where-Object { $key -match $_ } | Measure-Object).Count -gt 0)
+                {
+                    $spec.Remove($key)
+                }
+            }
+
+            $current = $spec.Keys | ForEach-Object { "{0} = {1}" -f $_, $spec[$_] } | Sort-Object
+
+            # Read any existing configuration
+            $path = [System.IO.Path]::Combine($CheckPath, $vm.Name + ".txt")
+            if (Test-Path $path)
+            {
+                $content = Get-Content -Encoding UTF8 $path
+
+                # Compare configurations
+                $existingCfg = [System.Collections.Generic.HashSet[string]]::New()
+                $newCfg = [System.Collections.Generic.HashSet[string]]::New()
+
+                $current | ForEach-Object { $existingCfg.Add($_) | Out-Null }
+                $content | ForEach-Object { $newCfg.Add($_) | Out-Null }
+
+                # Capture common configuration
+                $common = [System.Collections.Generic.HashSet[string]]::New($existingCfg)
+                $common.IntersectWith($newCfg)
+
+                # Determine differences
+                $newCfg.ExceptWith($common)
+                $existingCfg.ExceptWith($common)
+
+                if ($newCfg.Count -gt 0 -or $existingCfg.Count -gt 0)
+                {
+                    $capture = New-Capture
+                    Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                        Write-Information "VM configuration differences identified ($vm)"
+                        Write-Information ""
+                        Write-Information "Old Values:"
+                        $existingCfg
+                        Write-Information ""
+
+                        Write-Information "New Values:"
+                        $newCfg
+                        Write-Information ""
+                    }
+
+                    New-Notification -Title "VM Configuration Differences ($vm)" -Body ($capture.ToString())
+
+                } else {
+                    Write-Information "No differences"
+                }
+
+            } else {
+                Write-Information "No existing configuration"
+            }
+
+            # Save the current configuration to file
+            Write-Information "Saving configuration"
+            $current | Out-File -Encoding UTF8 $path
         }
     }
 }
