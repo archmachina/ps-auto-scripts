@@ -665,8 +665,8 @@ Register-Automation -Name vmware.vm_compare_config -ScriptBlock {
                 $existingCfg = [System.Collections.Generic.HashSet[string]]::New()
                 $newCfg = [System.Collections.Generic.HashSet[string]]::New()
 
-                $current | ForEach-Object { $existingCfg.Add($_) | Out-Null }
-                $content | ForEach-Object { $newCfg.Add($_) | Out-Null }
+                $content | ForEach-Object { $existingCfg.Add($_) | Out-Null }
+                $current | ForEach-Object { $newCfg.Add($_) | Out-Null }
 
                 # Capture common configuration
                 $common = [System.Collections.Generic.HashSet[string]]::New($existingCfg)
