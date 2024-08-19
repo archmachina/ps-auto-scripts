@@ -20,7 +20,7 @@ Register-Automation -Name fs_maint.purge_files -ScriptBlock {
         [string]$Name,
 
         [Parameter(Mandatory=$true)]
-        [ValidateNotNull()]
+        [AllowNull()]
         [AllowEmptyCollection()]
         [System.IO.FileInfo[]]$FileList,
 
@@ -43,6 +43,12 @@ Register-Automation -Name fs_maint.purge_files -ScriptBlock {
 
     process
     {
+        # Just return if a null or empty list was provided
+        if (($FileList | Measure-Object).Count -eq 0)
+        {
+            return
+        }
+
         # Make sure we have positive values
         $WarningAgeDays = [Math]::Abs($WarningAgeDays)
         $PurgeAgeDays = [Math]::Abs($PurgeAgeDays)
