@@ -119,7 +119,7 @@ Register-Automation -Name active_directory.inactive_users -ScriptBlock {
         } else {
             $disableUsers | ForEach-Object {
                 Write-Information ("Disabling user: {0}" -f $_.DistinguishedName)
-                # Disable-ADAccount -Identity $_.DistinguishedName | Out-Null
+                Disable-ADAccount -Identity $_.DistinguishedName | Out-Null
             }
         }
 
