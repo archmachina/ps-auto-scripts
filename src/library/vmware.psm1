@@ -708,3 +708,38 @@ Register-Automation -Name vmware.vm_compare_config -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.vmtools_check -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vms
+    )
+
+    process
+    {
+        # Collect a list of the VMs that are no 'toolsOk'
+
+        $vmMatch = $vms | Select-Object Name,PowerState,@{
+            N="ToolsStatus"
+            E={ $_.Guest.ExtensionData.ToolsStatus }
+        } | Where-Object {
+            $_.ToolsStatus -ne 'toolsOk' -and $_.PowerState -eq 'PoweredOn'
+        } | Sort-Object -Property Name
+
+        if (($vmMatch | Measure-Object).Count -gt 0)
+        {
+            # Found some VMs that are not 'toolsOk'
+            $capture = new-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "VMs with missing or old VMware Tools installs identified"
+                Write-Information ""
+                $vmMatch | Format-Table -Property Name,ToolsStatus | Out-String -Width 300
+            }
+
+            New-Notification -Title "VMs with missing or old VMTools" -Body ($capture.ToString())
+        }
+
+    }
+}
+
