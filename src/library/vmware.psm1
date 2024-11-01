@@ -11,7 +11,7 @@ $InformationPreference = "Continue"
 
 # Modules
 Set-PSRepository PSGallery -InstallationPolicy Trusted
-@("VMware.VimAutomation.Core") | ForEach-Object {
+@("VMware.PowerCli") | ForEach-Object {
     Install-Module -Scope CurrentUser -Confirm:$false $_ -EA Ignore
     Import-Module $_
 }
@@ -743,3 +743,63 @@ Register-Automation -Name vmware.vmtools_check -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.vmhost_compliance -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vmhosts,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$TestCompliance = $false
+    )
+
+    process
+    {
+        # If required, test compliance for the hosts
+        if ($TestCompliance)
+        {
+            Write-Information "Running compliance check against hosts"
+            try {
+                $vmhosts | Test-Compliance
+            } catch {
+                New-Notification -Title "Failed host compliance update" -Body ($_ | Out-String)
+            }
+        }
+
+        # Collect compliance information for all vmhosts
+        Write-Information "Collecting compliance information"
+        $compliance = $vmhosts | Get-Compliance -Detailed
+
+        # Organise compliance by host, baseline and patches
+        Write-Information "Formatting compliance information"
+        $compliance = $compliance | ForEach-Object {
+            $obj = [PSCustomObject]@{
+                Entity = $_.Entity.Name | Out-String -NoNewline
+                Status = $_.Status | Out-String -NoNewline
+                Baseline = $_.Baseline.Name | Out-String -NoNewline
+                NotCompliantPatches = "N/A"
+            }
+
+            if (($_ | Get-Member).Name -contains "NotCompliantPatches")
+            {
+                $obj.NotCompliantPatches = ($_.NotCompliantPatches | Measure).Count | Out-String -NoNewline
+            }
+
+            $obj
+        }
+
+        # Display host compliance status
+        $capture = New-Capture
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Host compliance status"
+            Write-Information ""
+            $compliance | Format-Table -Wrap | Out-String -Width 300
+        }
+
+        New-Notification -Title "Host compliance state" -Body ($capture.ToString())
+    }
+}
+
+ 
