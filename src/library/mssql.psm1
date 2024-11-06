@@ -44,6 +44,7 @@ SELECT
     sjh.step_name,
     sjh.run_status,
     sjh.message,
+    sjh.run_duration,
     msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time) as run_datetime
 FROM msdb.dbo.sysjobhistory as sjh
 INNER JOIN msdb.dbo.sysjobs AS sj ON sj.job_id = sjh.job_id
@@ -404,7 +405,11 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [int]$CommandTimeout = 360
+        [int]$CommandTimeout = 360,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$MaxSeconds = -1
     )
 
     process
@@ -434,12 +439,19 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
 
         # Deserialise the records and transform
         $records = $result | ConvertFrom-CSV | ForEach-Object {
+
+            # Calculate duration in seconds
+            $seconds = $_.run_duration % 100
+            $seconds += ([Math]::Floor($_.run_duration / 100)) % 100 * 60
+            $seconds += ([Math]::Floor($_.run_duration / 100 / 100)) * 60 * 60
+
             # Perform any transforms on the record
             [PSCustomObject]@{
                 job_name = $_.job_name
                 step_name = $_.step_name
                 run_status = $_.run_status
                 message = $_.message
+                run_seconds = $seconds
                 run_datetime = [DateTime]::Parse($_.run_datetime)
             }
         }
@@ -474,17 +486,41 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
         if ($StatusReport)
         {
             New-Notification -Title "Job Status Report ($Name)" -Body $capture.ToString()
-            return
+        } else {
+            # Send a notification if any jobs have error statuses
+            $errorSummary = $summary | Where-Object { $_.run_status -in @(0,2) }
+            if (($errorSummary | Measure-Object).Count -gt 0)
+            {
+                New-Notification -Title "Job errors found ($Name)" -ScriptBlock {
+                    Write-Information "Job errors found ($Name):"
+                    $errorSummary | Format-Table | Out-String -Width 300
+                }
+            }
         }
 
-        # Send a notification if any jobs have error statuses
-        $errorSummary = $summary | Where-Object { $_.run_status -in @(0,2) }
-        if (($errorSummary | Measure-Object).Count -gt 0)
-        {
-            New-Notification -Title "Job errors found ($Name)" -ScriptBlock {
-                Write-Information "Job errors found ($Name):"
-                $errorSummary | Format-Table | Out-String -Width 300
+        # Collect information for jobs that have run over threshold
+        $summary = $records | Where-Object { $MaxSeconds -ge 0 -and $_.run_seconds -gt $MaxSeconds } |
+            Sort-Object -Property run_seconds -Descending |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    job_name = $_.job_name | Limit-StringLength -Length 40
+                    step_name = $_.step_name | Limit-StringLength -Length 40
+                    run_status = $_.run_status
+                    last_run = $_.run_datetime
+                    minutes = [Math]::Round($_.run_seconds / 60, 2)
+                }
             }
+
+        if (($summary | Measure-Object).Count -gt 0)
+        {
+            # Log jobs over duration threshold
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Jobs over threshold ($Name) (threshold $MaxSeconds seconds):"
+                $summary | Format-Table | Out-String -Width 300
+            }
+
+            New-Notification -Title "Jobs over threshold ($Name)" -Body ($capture.ToString())
         }
     }
 }
