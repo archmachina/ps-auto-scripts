@@ -813,11 +813,18 @@ Register-Automation -Name vmware.vmhost_compliance -ScriptBlock {
                 Status = $_.Status | Out-String -NoNewline
                 Baseline = $_.Baseline.Name | Out-String -NoNewline
                 NotCompliantPatches = "N/A"
+                StagedPatches = "N/A"
             }
 
             if (($_ | Get-Member).Name -contains "NotCompliantPatches")
             {
                 $obj.NotCompliantPatches = ($_.NotCompliantPatches | Measure).Count | Out-String -NoNewline
+            }
+
+            # Staged patches don't appear as 'NotCompliantPatches', so separate column for these
+            if (($_ | Get-Member).Name -contains "StagedPatches")
+            {
+                $obj.StagedPatches = ($_.StagedPatches | Measure).Count | Out-String -NoNewline
             }
 
             $obj
