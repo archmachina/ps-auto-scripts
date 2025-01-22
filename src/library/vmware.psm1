@@ -228,17 +228,38 @@ Register-Automation -Name vmware.snapshot_cleanup -ScriptBlock {
         }
 
         # Remove each snapshot
+        $failed = @()
+        $completed = @()
+
         $snapshots | ForEach-Object {
             $snapshot = $_
 
             Write-Information ("Removing snapshot: " + $snapshot.Name)
-            $_ | Remove-Snapshot -Confirm:$false | Out-Null
+            try {
+                $snapshot | Remove-Snapshot -Confirm:$false | Out-Null
+                $completed += $snapshot
+            } catch {
+                Write-Information "Failed to remove snapshot: $_"
+                $failed += $snapshot
+            }
         }
 
         # Log a notification for the removed snapshots
-        New-Notification -Title "Snapshots removed" -ScriptBlock {
-            Write-Information "Removed snapshots:"
-            Write-Information ($snapshots | Format-Table VM,Name,Created,SizeGB | Out-String)
+        if (($completed | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Snapshots removed" -ScriptBlock {
+                Write-Information "Removed snapshots:"
+                Write-Information ($completed | Format-Table VM,Name,Created,SizeGB | Out-String)
+            }
+        }
+
+        # Notification for any failed snapshots
+        if (($failed | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Snapshots failed to remove" -ScriptBlock {
+                Write-Information "Failed to remove snapshots:"
+                Write-Information ($failed | Format-Table VM,Name,Created,SizeGB | Out-String)
+            }
         }
     }
 }
@@ -255,7 +276,10 @@ Register-Automation -Name vmware.vm_consolidate -ScriptBlock {
     process
     {
         # Consolidate VMs requiring it and record VMs changed
-        $consolidated = $vms | ForEach-Object {
+        $failed = @()
+        $completed = @()
+
+        $vms | ForEach-Object {
             $vm = $_
 
             # Do nothing if this VM doesn't require consolidation
@@ -266,22 +290,31 @@ Register-Automation -Name vmware.vm_consolidate -ScriptBlock {
 
             # Consolidate VM
             Write-Information ("Consolidating VM: " + $vm.Name)
-            $vm.ExtensionData.ConsolidateVMDisks()
-
-            $vm
+            try {
+                $vm.ExtensionData.ConsolidateVMDisks()
+                $completed += $vm
+            } catch {
+                Write-Information "Failed to consolidate VM: $_"
+                $failed += $vm
+            }
         }
 
-        # Finish here if no VMs required consolidation
-        if (($consolidated | Measure-Object).Count -lt 1)
+        # Log a notification for consolidated VMs
+        if (($completed | Measure-Object).Count -gt 0)
         {
-            Write-Information "No VMs required consolidation"
-            return
+            New-Notification -Title "VMs Consolidated" -ScriptBlock {
+                Write-Information "VMs consolidated:"
+                Write-Information ($completed | Format-Table -Property Name | Out-String)
+            }
         }
 
-        # Log a notification as we consolidated some VMs
-        New-Notification -Title "VMs Consolidated" -ScriptBlock {
-            Write-Information "VMs consolidated:"
-            Write-Information ($consolidated | ForEach-Object { $_.Name })
+        # Log a message for VMs failed to consolidate
+        if (($failed | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "VMs Failed Consolidation" -ScriptBlock {
+                Write-Information "VMs Failed Consolidation:"
+                Write-Information ($failed | Format-Table -Property Name | Out-String)
+            }
         }
     }
 }
