@@ -231,7 +231,13 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the database status
         $dbBackupRecords = $result | ConvertFrom-CSV
@@ -435,7 +441,13 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the records and transform
         $records = $result | ConvertFrom-CSV | ForEach-Object {
@@ -576,7 +588,13 @@ Register-Automation -Name mssql.maint_plan_status -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the records and transform
         $records = $result | ConvertFrom-CSV | ForEach-Object {
@@ -694,7 +712,13 @@ Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the records and transform
         $records = $result | ConvertFrom-CSV | ForEach-Object {
