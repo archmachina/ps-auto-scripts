@@ -906,14 +906,14 @@ SELECT
   ((sjh.run_duration % 100) + (sjh.run_duration / 100 % 100 * 60) + (sjh.run_duration / 10000 * 3600)) / 60 as run_minutes
 FROM msdb.dbo.sysjobhistory as sjh
 INNER JOIN msdb.dbo.sysjobs AS sj ON sj.job_id = sjh.job_id
-INNER JOIN msdb.dbo.sysjobsteps as sjs on sjs.step_id = sjh.step_id and sjs.job_id = sjh.job_id
+LEFT JOIN msdb.dbo.sysjobsteps as sjs on sjs.step_id = sjh.step_id and sjs.job_id = sjh.job_id
 WHERE
   sj.enabled = 1
   AND DATEADD(second, (
 	(sjh.run_duration % 100) + (sjh.run_duration / 100 % 100 * 60) + (sjh.run_duration / 10000 * 3600)
   ), msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time)) > DATEADD(HOUR, {0}, getdate())
   AND ((sjh.run_duration % 100) + (sjh.run_duration / 100 % 100 * 60) + (sjh.run_duration / 10000 * 3600)) / 60 > ({1})
-  AND sjs.subsystem NOT IN ( 'LogReader', 'Distribution' )
+  AND (sjs.subsystem IS NULL or sjs.subsystem NOT IN ( 'LogReader', 'Distribution' ))
 ORDER BY start_datetime ASC
 "@
 
