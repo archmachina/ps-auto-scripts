@@ -875,7 +875,6 @@ WHERE
   AND DATEADD(second, (
 	(sjh.run_duration % 100) + (sjh.run_duration / 100 % 100 * 60) + (sjh.run_duration / 10000 * 3600)
   ), msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time)) > DATEADD(HOUR, {0}, getdate())
-  AND ((sjh.run_duration % 100) + (sjh.run_duration / 100 % 100 * 60) + (sjh.run_duration / 10000 * 3600)) / 60 > ({1})
   AND (sjs.subsystem IS NULL or sjs.subsystem NOT IN ( 'LogReader', 'Distribution' ))
 ORDER BY start_datetime ASC
 "@
@@ -905,7 +904,11 @@ Register-Automation -Name mssql.finished_job_duration -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [int]$AgeHours = 24
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [HashTable]$JobOverrides = @{}
     )
 
     process
@@ -919,7 +922,7 @@ Register-Automation -Name mssql.finished_job_duration -ScriptBlock {
         # Invoke command parameters
         $invokeArgs = @{
             ScriptBlock = $queryScript
-            ArgumentList = $Name,$ConnectionString,($finishedJobDurationCheck -f $AgeHours,$ThresholdMinutes),$CommandTimeout
+            ArgumentList = $Name,$ConnectionString,($finishedJobDurationCheck -f $AgeHours),$CommandTimeout
         }
 
         # Determine what machine to run the check from
@@ -947,7 +950,36 @@ Register-Automation -Name mssql.finished_job_duration -ScriptBlock {
                 job_name = $_.job_name
                 step_name = $_.step_name
                 start_datetime = [DateTime]::Parse($_.start_datetime)
-                run_minutes = $_.run_minutes
+                run_minutes = [Int]::Parse($_.run_minutes)
+            }
+        }
+
+        # Filter for records over the threshold
+        $records = $records | ForEach-Object {
+            $record = $_
+            $threshold = $null
+
+            # Check if there is an override
+            # Match the first regex we find so that they can go from more specific to less
+            $JobOverrides.Keys | ForEach-Object {
+                $key = $_
+
+                if ($null -eq $threshold -and $record.job_name -match $key)
+                {
+                    $threshold = [Math]::Abs($JobOverrides[$key])
+                }
+            }
+
+            # Default to ThresholdMinutes, if there is no override
+            if ($null -eq $threshold)
+            {
+                $threshold = $ThresholdMinutes
+            }
+
+            # Check threshold
+            if ($record.run_minutes -gt $threshold)
+            {
+                $record
             }
         }
 
