@@ -841,5 +841,73 @@ Register-Automation -Name vmware.vmhost_compliance -ScriptBlock {
         New-Notification -Title "Host compliance state" -Body ($capture.ToString())
     }
 }
-
  
+Register-Automation -Name vmware.vm_uptime_check -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vms,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$LowThreshold = 3,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$HighThreshold = 365
+    )
+
+    process
+    {
+        # Make sure thresholds are positive
+        $HighThreshold = [Math]::Abs($HighThreshold)
+        $LowThreshold = [Math]::Abs($LowThreshold)
+
+        # For each VM, get the current uptime
+        $records = $vms | ForEach-Object {
+            $vm = $_
+
+            $uptime = $vm | Get-Stat -MaxSamples 1 -Realtime -Stat "sys.osuptime.latest" -EA Ignore
+
+            if ($null -ne $uptime)
+            {
+                [PSCustomObject]@{
+                    Name = $vm.Name
+                    UptimeDays = ([Math]::Round($uptime.Value / 60 / 60 / 24, 2))
+                }
+            }
+        }
+
+        # Reporting on VMs with low uptime
+        $lowRecords = $records | Where-Object { $_.UptimeDays -lt $LowThreshold }
+        if (($lowRecords | Measure-Object).Count -gt 0)
+        {
+            # Display Low records
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Hosts recently restarted"
+                Write-Information ""
+                $lowRecords | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Hosts recently restarted" -Body ($capture.ToString())
+        }
+
+        # Reporting on VMs with high uptime
+        $highRecords = $records | Where-Object { $_.UptimeDays -gt $HighThreshold }
+        if (($highRecords | Measure-Object).Count -gt 0)
+        {
+            # Display High records
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Hosts with high uptime"
+                Write-Information ""
+                $highRecords | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Hosts with high uptime" -Body ($capture.ToString())
+        }
+    }
+}
+
