@@ -44,7 +44,6 @@ SELECT
     sjh.step_name,
     sjh.run_status,
     sjh.message,
-    sjh.run_duration,
     msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time) as run_datetime
 FROM msdb.dbo.sysjobhistory as sjh
 INNER JOIN msdb.dbo.sysjobs AS sj ON sj.job_id = sjh.job_id
@@ -231,7 +230,13 @@ Register-Automation -Name mssql.backup_check -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the database status
         $dbBackupRecords = $result | ConvertFrom-CSV
@@ -405,11 +410,7 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [int]$CommandTimeout = 360,
-
-        [Parameter(Mandatory=$false)]
-        [ValidateNotNull()]
-        [int]$MaxSeconds = -1
+        [int]$CommandTimeout = 360
     )
 
     process
@@ -435,23 +436,22 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the records and transform
         $records = $result | ConvertFrom-CSV | ForEach-Object {
-
-            # Calculate duration in seconds
-            $seconds = $_.run_duration % 100
-            $seconds += ([Math]::Floor($_.run_duration / 100)) % 100 * 60
-            $seconds += ([Math]::Floor($_.run_duration / 100 / 100)) * 60 * 60
-
             # Perform any transforms on the record
             [PSCustomObject]@{
                 job_name = $_.job_name
                 step_name = $_.step_name
                 run_status = $_.run_status
                 message = $_.message
-                run_seconds = $seconds
                 run_datetime = [DateTime]::Parse($_.run_datetime)
             }
         }
@@ -496,31 +496,6 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
                     $errorSummary | Format-Table | Out-String -Width 300
                 }
             }
-        }
-
-        # Collect information for jobs that have run over threshold
-        $summary = $records | Where-Object { $MaxSeconds -ge 0 -and $_.run_seconds -gt $MaxSeconds } |
-            Sort-Object -Property run_seconds -Descending |
-            ForEach-Object {
-                [PSCustomObject]@{
-                    job_name = $_.job_name | Limit-StringLength -Length 40
-                    step_name = $_.step_name | Limit-StringLength -Length 40
-                    run_status = $_.run_status
-                    last_run = $_.run_datetime
-                    minutes = [Math]::Round($_.run_seconds / 60, 2)
-                }
-            }
-
-        if (($summary | Measure-Object).Count -gt 0)
-        {
-            # Log jobs over duration threshold
-            $capture = New-Capture
-            Invoke-CaptureScript -Capture $capture -ScriptBlock {
-                Write-Information "Jobs over threshold ($Name) (threshold $MaxSeconds seconds):"
-                $summary | Format-Table | Out-String -Width 300
-            }
-
-            New-Notification -Title "Jobs over threshold ($Name)" -Body ($capture.ToString())
         }
     }
 }
@@ -576,7 +551,13 @@ Register-Automation -Name mssql.maint_plan_status -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the records and transform
         $records = $result | ConvertFrom-CSV | ForEach-Object {
@@ -694,7 +675,13 @@ Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
         }
 
         # Invoke check scripts
-        $result = Invoke-Command @invokeArgs
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
 
         # Deserialise the records and transform
         $records = $result | ConvertFrom-CSV | ForEach-Object {
@@ -769,4 +756,248 @@ Register-Automation -Name mssql.fragmentation_check -ScriptBlock {
         }
     }
 }
+
+$activeJobDurationCheck = @"
+SELECT
+	sj.name as job_name,
+	sja.start_execution_date as start_date,
+	DATEDIFF(second, sja.start_execution_date, getdate()) / 60 as run_minutes
+FROM msdb.dbo.sysjobactivity as sja
+INNER JOIN msdb.dbo.sysjobs AS sj on sj.job_id = sja.job_id
+INNER JOIN msdb.dbo.sysjobsteps as sjs on sjs.job_id = sja.job_id AND sjs.step_id = sja.last_executed_step_id+1
+WHERE
+	sja.start_execution_date IS NOT NULL
+	AND sja.stop_execution_date IS NULL
+	AND sja.session_id = (
+		SELECT TOP 1 session_id FROM msdb.dbo.syssessions ORDER BY agent_start_date DESC
+	)
+	AND sjs.subsystem not in ( 'LogReader', 'Distribution' )
+"@
+
+Register-Automation -Name mssql.active_job_duration -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ConnectionString,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExecuteFrom = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$CommandTimeout = 360,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [int]$ThresholdMinutes
+    )
+
+    process
+    {
+        Write-Information "Connection: $Name"
+
+        # Make sure ThresholdMinutes is positive
+        $ThresholdMinutes = [Math]::Abs($ThresholdMinutes)
+
+        # Invoke command parameters
+        $invokeArgs = @{
+            ScriptBlock = $queryScript
+            ArgumentList = $Name,$ConnectionString,$activeJobDurationCheck,$CommandTimeout
+        }
+
+        # Determine what machine to run the check from
+        if ([string]::IsNullOrEmpty($ExecuteFrom))
+        {
+            Write-Information "Executing locally"
+        } else {
+            $invokeArgs["ComputerName"] = $ExecuteFrom
+            Write-Information "Executing from $ExecuteFrom"
+        }
+
+        # Invoke check scripts
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
+
+        # Deserialise the records and transform
+        $records = $result | ConvertFrom-CSV | ForEach-Object {
+            # Perform any transforms on the record
+            [PSCustomObject]@{
+                job_name = $_.job_name
+                run_minutes = $_.run_minutes
+                start_date = [DateTime]::Parse($_.start_date)
+            }
+        }
+
+        Write-Information ("Found {0} job records" -f ($records | Measure-Object).Count)
+
+        # Filter by anything over the threshold
+        $records = $records | Where-Object {
+            $_.run_minutes -ge $ThresholdMinutes
+        }
+
+        # Generate a notification if there are jobs over the threshold
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            # Log jobs over duration threshold
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Active jobs over threshold ($Name) (threshold $ThresholdMinutes minutes):"
+                $records | Format-Table | Out-String -Width 300
+            }
+
+            New-Notification -Title "Active jobs over threshold ($Name)" -Body ($capture.ToString())
+        }
+    }
+}
+
+$finishedJobDurationCheck = @"
+SELECT
+  sj.name as job_name,
+  sjh.step_name,
+  msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time) as start_datetime,
+  ((sjh.run_duration % 100) + (sjh.run_duration / 100 % 100 * 60) + (sjh.run_duration / 10000 * 3600)) / 60 as run_minutes
+FROM msdb.dbo.sysjobhistory as sjh
+INNER JOIN msdb.dbo.sysjobs AS sj ON sj.job_id = sjh.job_id
+LEFT JOIN msdb.dbo.sysjobsteps as sjs on sjs.step_id = sjh.step_id and sjs.job_id = sjh.job_id
+WHERE
+  sj.enabled = 1
+  AND DATEADD(second, (
+	(sjh.run_duration % 100) + (sjh.run_duration / 100 % 100 * 60) + (sjh.run_duration / 10000 * 3600)
+  ), msdb.dbo.agent_datetime(sjh.run_date, sjh.run_time)) > DATEADD(HOUR, {0}, getdate())
+  AND (sjs.subsystem IS NULL or sjs.subsystem NOT IN ( 'LogReader', 'Distribution' ))
+ORDER BY start_datetime ASC
+"@
+
+Register-Automation -Name mssql.finished_job_duration -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Name,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ConnectionString,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExecuteFrom = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$CommandTimeout = 360,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [int]$ThresholdMinutes,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [HashTable]$JobOverrides = @{}
+    )
+
+    process
+    {
+        Write-Information "Connection: $Name"
+
+        # Make sure ThresholdMinutes and AgeHours have the expected sign
+        $ThresholdMinutes = [Math]::Abs($ThresholdMinutes)
+        $AgeHours = -([Math]::Abs($AgeHours))
+
+        # Invoke command parameters
+        $invokeArgs = @{
+            ScriptBlock = $queryScript
+            ArgumentList = $Name,$ConnectionString,($finishedJobDurationCheck -f $AgeHours),$CommandTimeout
+        }
+
+        # Determine what machine to run the check from
+        if ([string]::IsNullOrEmpty($ExecuteFrom))
+        {
+            Write-Information "Executing locally"
+        } else {
+            $invokeArgs["ComputerName"] = $ExecuteFrom
+            Write-Information "Executing from $ExecuteFrom"
+        }
+
+        # Invoke check scripts
+        try {
+            $result = Invoke-Command @invokeArgs
+        } catch {
+            Write-Information "Failed to perform query against endpoint: $_"
+            New-Notification -Title "Connection Failure: $Name" -Body ($_ | Out-String)
+            return
+        }
+
+        # Deserialise the records and transform
+        $records = $result | ConvertFrom-CSV | ForEach-Object {
+            # Perform any transforms on the record
+            [PSCustomObject]@{
+                job_name = $_.job_name
+                step_name = $_.step_name
+                start_datetime = [DateTime]::Parse($_.start_datetime)
+                run_minutes = [Int]::Parse($_.run_minutes)
+            }
+        }
+
+        # Filter for records over the threshold
+        $records = $records | ForEach-Object {
+            $record = $_
+            $threshold = $null
+
+            # Check if there is an override
+            # Match the first regex we find so that they can go from more specific to less
+            $JobOverrides.Keys | ForEach-Object {
+                $key = $_
+
+                if ($null -eq $threshold -and $record.job_name -match $key)
+                {
+                    $threshold = [Math]::Abs($JobOverrides[$key])
+                }
+            }
+
+            # Default to ThresholdMinutes, if there is no override
+            if ($null -eq $threshold)
+            {
+                $threshold = $ThresholdMinutes
+            }
+
+            # Check threshold
+            if ($record.run_minutes -gt $threshold)
+            {
+                $record
+            }
+        }
+
+        Write-Information ("Found {0} job records" -f ($records | Measure-Object).Count)
+
+        # Generate a notification if there are jobs over the threshold
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            # Log jobs over duration threshold
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Finished jobs over threshold ($Name) (threshold $ThresholdMinutes minutes):"
+                $records | Format-Table | Out-String -Width 300
+            }
+
+            New-Notification -Title "Finished jobs over threshold ($Name)" -Body ($capture.ToString())
+        }
+    }
+}
+
 
