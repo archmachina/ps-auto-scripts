@@ -911,3 +911,52 @@ Register-Automation -Name vmware.vm_uptime_check -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.offline_vms -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vms,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [AllowEmptyCollection()]
+        [string[]]$IgnoreFilter = @()
+    )
+
+    process
+    {
+        # Filter for offline VMs
+        $offline = $vms | Where-Object {
+            $_.PowerState -ne "PoweredOn"
+        } | ForEach-Object {
+            $vm = $_
+
+            # Find filters that match the VM name
+            $result = $IgnoreFilter | Where-Object {
+                $vm.Name -match $_
+            }
+
+            # Pass the VM on in the pipeline, if there was no match
+            if (($result | Measure-Object).Count -eq 0)
+            {
+                $vm
+            }
+        }
+
+        # Reporting on offline VMs
+        if (($offline | Measure-Object).Count -gt 0)
+        {
+            # Display offline VMs
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Offline VMs"
+                Write-Information ""
+                $offline | Format-Table -Property Name,PowerState -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Offline VMs" -Body ($capture.ToString())
+        }
+    }
+}
+
