@@ -138,3 +138,51 @@ Register-Automation -Name active_directory.inactive_users -ScriptBlock {
     }
 }
 
+Register-Automation -Name active_directory.lockedout_users -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Users,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # Filter for users who have been locked out recently
+        $records = $Users | Where-Object {
+            $_.AccountLockoutTime -gt ([DateTime]::Now.AddHours(-($AgeHours)))
+        }
+
+        # Transform records
+        $records = $records | ForEach-Object {
+            [PSCustomObject]@{
+                Name = $_.Name
+                LockedOut = $_.LockedOut
+                LockoutTime = $_.AccountLockoutTime
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} locked out users" -f ($records | Measure-Object).Count)
+
+        # Notification for any locked out users
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information ("Found {0} locked out users" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Locked out users" -Body ($capture.ToString())
+        }
+    }
+}
+
