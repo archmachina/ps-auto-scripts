@@ -66,6 +66,12 @@ try {
         Import-Module $_
     }
 
+    # Create the service directory, if it doesn't exist
+    if (!(Test-Path -Path $servicePath -PathType Container))
+    {
+        New-Item -ItemType Directory $servicePath
+    }
+
     # Rotate the log file, if required
     Reset-LogFile -LogPath $logPath -RotateSizeKB 512 -PreserveCount 5
 
