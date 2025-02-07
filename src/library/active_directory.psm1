@@ -170,18 +170,18 @@ Register-Automation -Name active_directory.lockedout_users -ScriptBlock {
         }
 
         # Report for logs
-        Write-Information ("Found {0} locked out users" -f ($records | Measure-Object).Count)
+        Write-Information ("Found {0} recently locked out users" -f ($records | Measure-Object).Count)
 
         # Notification for any locked out users
         if (($records | Measure-Object).Count -gt 0)
         {
             $capture = New-Capture
             Invoke-CaptureScript -Capture $capture -ScriptBlock {
-                Write-Information ("Found {0} locked out users" -f ($records | Measure-Object).Count)
+                Write-Information ("Found {0} recently locked out users" -f ($records | Measure-Object).Count)
                 $records | Format-Table -Wrap | Out-String -Width 300
             }
 
-            New-Notification -Title "Locked out users" -Body ($capture.ToString())
+            New-Notification -Title "Recently locked out users" -Body ($capture.ToString())
         }
     }
 }
