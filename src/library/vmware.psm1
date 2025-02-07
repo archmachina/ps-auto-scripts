@@ -911,3 +911,113 @@ Register-Automation -Name vmware.vm_uptime_check -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.offline_vms -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vms,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [AllowEmptyCollection()]
+        [string[]]$IgnoreFilter = @()
+    )
+
+    process
+    {
+        # Filter for offline VMs
+        $offline = $vms | Where-Object {
+            $_.PowerState -ne "PoweredOn"
+        } | ForEach-Object {
+            $vm = $_
+
+            # Find filters that match the VM name
+            $result = $IgnoreFilter | Where-Object {
+                $vm.Name -match $_
+            }
+
+            # Pass the VM on in the pipeline, if there was no match
+            if (($result | Measure-Object).Count -eq 0)
+            {
+                $vm
+            }
+        }
+
+        # Reporting on offline VMs
+        if (($offline | Measure-Object).Count -gt 0)
+        {
+            # Display offline VMs
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Offline VMs"
+                Write-Information ""
+                $offline | Format-Table -Property Name,PowerState -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Offline VMs" -Body ($capture.ToString())
+        }
+    }
+}
+
+Register-Automation -Name vmware.vmhost_time_check -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vmhosts,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$ThresholdSec = 30
+    )
+
+    process
+    {
+        # Get an ESXCLI interface for each of the VMs
+        Write-Information "Getting ESXCLI interfaces for vmhosts"
+        $interfaces = $vmhosts | ForEach-Object {
+            [PSCustomObject]@{
+                vmhost = $_
+                cli = $_ | Get-EsxCli -V2
+            }
+        }
+
+        # Get the time for each ESXi host
+        Write-Information "Collecting host time skew data"
+        $records = $interfaces | ForEach-Object {
+            $hostTime = [DateTime]::Parse($_.cli.system.time.get.Invoke()).ToUniversalTime()
+            $clientTime = [DateTime]::UtcNow
+
+            # Create a record representing the host and skew
+            [PSCustomObject]@{
+                Name = $_.vmhost.Name
+                SkewSeconds = ($hostTime - $clientTime).TotalSeconds
+            }
+        }
+
+        # Display host skew information for logs
+        $records | Format-Table | Out-String -Width 300
+
+        # Filter for records over the threshold
+        Write-Information "Filtering for hosts with time skew"
+        $skewed = $records | Where-Object {
+            [Math]::Abs($_.SkewSeconds) -gt $ThresholdSec
+        }
+
+        # Reporting on skewed hosts
+        if (($skewed | Measure-Object).Count -gt 0)
+        {
+            # Display skewed hosts
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Hosts with time skew"
+                Write-Information ""
+                $skewed | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Hosts with time skew" -Body ($capture.ToString())
+        }
+    }
+}
+
