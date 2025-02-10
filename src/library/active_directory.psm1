@@ -260,9 +260,13 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
         [ValidateNotNull()]
         [int]$AgeHours = 24,
 
-        [Parameter(mandatory=$false)]
+        [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [switch]$GroupResults = $false
+        [switch]$GroupResults = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [string[]]$UserIgnore = @()
     )
 
     process
@@ -322,6 +326,21 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
                     break
                 }
             }
+        }
+
+        # Ignore users that match the ignore filter
+        $records = $records | ForEach-Object {
+            $record = $_
+
+            foreach ($item in $UserIgnore)
+            {
+                if ($record.User -match $item)
+                {
+                    return
+                }
+            }
+
+            $record
         }
 
         # Group results and provide a count of the number of failed logins, if requested
