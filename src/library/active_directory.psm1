@@ -186,3 +186,67 @@ Register-Automation -Name active_directory.lockedout_users -ScriptBlock {
     }
 }
 
+Register-Automation -Name active_directory.lockedout_user_log -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Server,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # XPath string
+        $ageSearch = $AgeHours * 60 * 60 * 1000
+        $xPath = "*[System[(EventID=4740) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
+        Write-Information "XPath string: $xPath"
+
+        # Get event logs that match the xpath search in Security
+        try {
+            $events = Get-WinEvent -ComputerName $Server -LogName Security -FilterXPath $xPath -MaxEvents 10000
+        } catch {
+            # Get-WinEvent generates an ErrorRecord when there are no matches, but we still want to
+            # catch other issues.
+            if ($_ -is [System.Management.Automation.ErrorRecord] -and $_.Exception.Message -like "*No events were found*")
+            {
+                Write-Information "Search returned no results"
+                $events = @()
+            } else {
+                Write-Error $_
+            }
+        }
+
+        # Transform records
+        $records = $events | ForEach-Object {
+            [PSCustomObject]@{
+                Time = $_.TimeCreated
+                User = $_.Properties[0].Value
+                Domain = $_.Properties[5].Value
+                Source = $_.Properties[1].Value
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} lockout logs" -f ($records | Measure-Object).Count)
+
+        # Notification for any locked out users
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information ("Found {0} lockout logs" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Lockout log entries" -Body ($capture.ToString())
+        }
+    }
+}
+
