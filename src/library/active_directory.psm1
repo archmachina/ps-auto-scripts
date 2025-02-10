@@ -191,7 +191,7 @@ Register-Automation -Name active_directory.lockedout_user_log -ScriptBlock {
     param(
         [Parameter(Mandatory=$true)]
         [ValidateNotNull()]
-        $Server,
+        [string[]]$Servers,
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
@@ -209,17 +209,16 @@ Register-Automation -Name active_directory.lockedout_user_log -ScriptBlock {
         Write-Information "XPath string: $xPath"
 
         # Get event logs that match the xpath search in Security
-        try {
-            $events = Get-WinEvent -ComputerName $Server -LogName Security -FilterXPath $xPath -MaxEvents 10000
-        } catch {
-            # Get-WinEvent generates an ErrorRecord when there are no matches, but we still want to
-            # catch other issues.
-            if ($_ -is [System.Management.Automation.ErrorRecord] -and $_.Exception.Message -like "*No events were found*")
-            {
-                Write-Information "Search returned no results"
-                $events = @()
-            } else {
-                Write-Error $_
+        $result = Get-WinEventServers -Servers $Servers -LogName Security -Filter $xPath
+        $events = $result.Events
+
+        # Notification for any failed servers
+        if (($result.Failures | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Server log query failed"
+                $result.Failures | Format-Table -Wrap | Out-String -Width 300
             }
         }
 
@@ -246,6 +245,155 @@ Register-Automation -Name active_directory.lockedout_user_log -ScriptBlock {
             }
 
             New-Notification -Title "Lockout log entries" -Body ($capture.ToString())
+        }
+    }
+}
+
+Register-Automation -Name active_directory.failed_logins -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$GroupResults = $false
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # XPath string
+        $ageSearch = $AgeHours * 60 * 60 * 1000
+        $xPath = "*[System[(EventID=4625) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
+        Write-Information "XPath string: $xPath"
+
+        # Get event logs that match the xpath search in Security
+        $result = Get-WinEventServers -Servers $Servers -LogName Security -Filter $xPath
+        $events = $result.Events
+
+        # Notification for any failed servers
+        if (($result.Failures | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Server log query failed"
+                $result.Failures | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+
+        # Transform records
+        $records = $events | ForEach-Object {
+            [PSCustomObject]@{
+                Time = $_.TimeCreated
+                User = $_.Properties[5].Value
+                Domain = $_.Properties[6].Value
+                Workstation = $_.Properties[13].Value
+                Address = $_.Properties[19].Value
+                Method = $_.Properties[12].Value
+            }
+        }
+
+        # Group results and provide a count of the number of failed logins, if requested
+        if ($GroupResults)
+        {
+            $records = $records | Group-Object -Property User,Domain,Workstation,Address,Method | ForEach-Object {
+                [PSCustomObject]@{
+                    FailureCount = $_.Count
+                    User = $_.Group[0].User
+                    Domain = $_.Group[0].Domain
+                    Workstation = $_.Group[0].Workstation
+                    Address = $_.Group[0].Address
+                    Method = $_.Group[0].Method
+                }
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} failed login logs" -f ($records | Measure-Object).Count)
+
+        # Notification for any failed logins
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information ("Found {0} failed logins" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Failed logins" -Body ($capture.ToString())
+        }
+    }
+
+}
+
+Function Get-WinEventServers
+{
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [string[]]$Servers,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$LogName,
+
+        [Parameter(mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$MaxSamples = 10000,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Filter
+    )
+
+    process
+    {
+        # Record of which servers failed during log query
+        $failed = @()
+
+        # Query each listed server
+        $events = $Servers | ForEach-Object {
+            $server = $_
+
+            $failure = $null
+            try {
+                Write-Information "Checking logs for $server"
+                Get-WinEvent -ComputerName $server -LogName $LogName -FilterXPath $Filter -MaxEvents $MaxSamples
+            } catch {
+                $failure = [string]$_
+
+                # Get-WinEvent generates an ErrorRecord when there are no matches, but we still want to
+                # catch other issues.
+                if ($failure -like "*No events were found*")
+                {
+                    $failure = $null
+                }
+            }
+
+            # Check if we failed to capture logs
+            if ($null -ne $failure)
+            {
+                Write-Information "Server log query failure for $server"
+                $failed += [PSCustomObject]@{
+                    Name = $server
+                    Error = $failure | Out-String
+                }
+            }
+
+        } | ForEach-Object { $_ }
+
+        # Return the logs and list any failed servers
+        [PSCustomObject]@{
+            Events = $events
+            Failures = $failed
         }
     }
 }
