@@ -202,9 +202,9 @@ Register-Automation -Name active_directory.lockedout_user_log -ScriptBlock {
     {
         # Make sure AgeHours is positive
         $AgeHours = [Math]::Abs($AgeHours)
+        $ageSearch = $AgeHours * 60 * 60 * 1000
 
         # XPath string
-        $ageSearch = $AgeHours * 60 * 60 * 1000
         $xPath = "*[System[(EventID=4740) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
         Write-Information "XPath string: $xPath"
 
@@ -269,10 +269,10 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
     {
         # Make sure AgeHours is positive
         $AgeHours = [Math]::Abs($AgeHours)
+        $ageSearch = $AgeHours * 60 * 60 * 1000
 
         # XPath string
-        $ageSearch = $AgeHours * 60 * 60 * 1000
-        $xPath = "*[System[(EventID=4625) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
+        $xPath = "*[System[band(Keywords,4503599627370496) and (EventID=4625 or EventID=4771) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
         Write-Information "XPath string: $xPath"
 
         # Get event logs that match the xpath search in Security
@@ -291,13 +291,36 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
 
         # Transform records
         $records = $events | ForEach-Object {
-            [PSCustomObject]@{
-                Time = $_.TimeCreated
-                User = $_.Properties[5].Value
-                Domain = $_.Properties[6].Value
-                Workstation = $_.Properties[13].Value
-                Address = $_.Properties[19].Value
-                Method = $_.Properties[12].Value
+            $record = $_
+
+            switch ($record.Id)
+            {
+                4771 {
+                    [PSCustomObject]@{
+                        Time = $record.TimeCreated
+                        User = $record.Properties[0].Value
+                        Domain = ""
+                        Workstation = ""
+                        Address = $record.Properties[6].Value
+                        Method = "Kerberos"
+                        LogonType = ""
+                    }
+
+                    break
+                }
+                4625 {
+                    [PSCustomObject]@{
+                        Time = $record.TimeCreated
+                        User = $record.Properties[5].Value
+                        Domain = $record.Properties[6].Value
+                        Workstation = $record.Properties[13].Value
+                        Address = $record.Properties[19].Value
+                        Method = $record.Properties[12].Value
+                        LogonType = $record.Properties[10].Value
+                    }
+
+                    break
+                }
             }
         }
 
@@ -312,6 +335,7 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
                     Workstation = $_.Group[0].Workstation
                     Address = $_.Group[0].Address
                     Method = $_.Group[0].Method
+                    LogonType = $_.Group[0].LogonType
                 }
             }
         }
