@@ -1021,3 +1021,90 @@ Register-Automation -Name vmware.vmhost_time_check -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.vm_latency -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyCollection()]
+        $vms,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [Nullable[int]]$ThresholdAvgMs = $null,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [Nullable[int]]$ThresholdMaxMs = $null,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 1
+    )
+
+    process
+    {
+        # Check input values
+        if ($null -ne $ThresholdMaxMs)
+        {
+            $ThresholdMaxMs = [Math]::Abs($ThresholdMaxMs)
+        }
+
+        if ($null -ne $ThresholdAvgMs)
+        {
+            $ThresholdAvgMs = [Math]::Abs($ThresholdAvgMs)
+        }
+
+        $AgeHours = [Math]::Abs($AgeHours)
+
+        # For each VM, retrieve the disk latency
+        $records = $vms | ForEach-Object {
+            $vm = $_
+
+            $latency = $vm | Get-Stat -Start ([DateTime]::Now.AddHours(-($AgeHours))) -Stat "disk.maxTotalLatency.latest" -EA Ignore
+
+            if ($null -ne $latency -and ($latency | Measure-Object).Count -gt 0)
+            {
+                $measure = $latency | Measure-Object -Maximum -Average -Property Value
+                [PSCustomObject]@{
+                    Name = $vm.Name
+                    Maximum = [Math]::Round($measure.Maximum, 2)
+                    Average = [Math]::Round($measure.Average, 2)
+                }
+            } else {
+                Write-Information "Can't retrieve latency information for $vm"
+            }
+        }
+
+        # Record VM latency for logs
+        Write-Information "VM latency"
+        $records | Format-Table -Wrap | Out-String -Width 300
+
+        # Reporting on VMs with high uptime
+        $highRecords = $records | Where-Object {
+            # Average is above the threshold OR
+            ($null -ne $ThresholdAvgMs -and $_.Average -gt $ThresholdAvgMs) -or
+
+            # Max is above the threshold
+            ($null -ne $ThresholdMaxMs -and $_.Maximum -gt $ThresholdMaxMs)
+        }
+
+        # Display notification for high latency records
+        if (($highRecords | Measure-Object).Count -gt 0)
+        {
+            # Display High records
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "VMs with high latency"
+                Write-Information ""
+                Write-Information "Average latency threshold: $ThresholdAvgMs"
+                Write-Information "Maximum latency threshold: $ThresholdMaxMs"
+                Write-Information ""
+                $highRecords | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "VMs with high disk latency" -Body ($capture.ToString())
+        }
+    }
+}
+
+
