@@ -1238,20 +1238,26 @@ Register-Automation -Name vmware.vcenter_patch_check -ScriptBlock {
 
             # Transform update objects
             $updates | ForEach-Object {
-                [PSCustomObject]@{
+                $obj = [ordered]@{
                     Server = $server
-
-                    Name = $_.Name
-                    Version = $_.version
-
-                    Priority = $_.priority
-                    Severity = $_.severity
-
-                    UpdateType = $_.update_type
-                    Reboot = $_.reboot_required
-                    Released = $_.release_date
-                    Size = $_.size
                 }
+
+                if (($_ | Get-Member).Name -contains "Name")
+                {
+                    $obj["Name"] = $_.Name
+                }
+
+                $obj["Version"] = $_.version
+
+                $obj["Priority"] = $_.priority
+                $obj["Severity"] = $_.severity
+
+                $obj["UpdateType"] = $_.update_type
+                $obj["Reboot"] = $_.reboot_required
+                $obj["Released"] = $_.release_date
+                $obj["Size"] = $_.size
+
+                [PSCustomObject]$obj
             }
         }
 
