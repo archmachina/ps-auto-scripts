@@ -1192,3 +1192,107 @@ Register-Automation -Name vmware.vmhost_latency -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.vcenter_patch_check -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [string[]]$Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [string[]]$IgnorePriority = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [string[]]$IgnoreSeverity = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [string[]]$IgnoreType = @()
+    )
+
+    process
+    {
+        $failed = @()
+
+        # Retrieve information on all updates
+        $allUpdates = $Servers | ForEach-Object {
+            $server = $_
+
+            try {
+                # Retrieve pending updates
+                $pending = Get-CisService -Server $server -Name com.vmware.appliance.update.pending
+                $updates = $pending.list("LOCAL_AND_ONLINE")
+            } catch {
+                $err = $_
+
+                Write-Information "Failed to list updates for $server"
+                $failed += [PSCustomObject]@{
+                    Server = $server
+                    Failure = [string]$err
+                }
+
+                return
+            }
+
+            # Transform update objects
+            $updates | ForEach-Object {
+                [PSCustomObject]@{
+                    Server = $server
+
+                    Name = $_.Name
+                    Version = $_.version
+
+                    Priority = $_.priority
+                    Severity = $_.severity
+
+                    UpdateType = $_.update_type
+                    Reboot = $_.reboot_required
+                    Released = $_.release_date
+                    Size = $_.size
+                }
+            }
+        }
+
+        # Log a notification for any failed servers
+        if (($failed | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Failures listing appliance updates"
+                $failed | Format-Table -Wrap | Out-String -Width 300
+            }
+            New-Notification -Title "Failure retrieving appliance updates" -Body ($capture.ToString())
+        }
+
+        # Filter updates
+        $allUpdates = $allUpdates | Where-Object {
+            $_.Priority -notin $IgnorePriority
+        } | Where-Object {
+            $_.Severity -notin $IgnoreSeverity
+        } | Where-Object {
+            $_.UpdateType -notin $IgnoreType
+        }
+
+        # Notify of available updates
+        if (($allUpdates | Measure-Object).Count -gt 0)
+        {
+            $groups = $allUpdates | Group-Object -Property Server
+
+            $groups | ForEach-Object {
+                $group = $_
+
+                $name = $group.Group[0].Server
+
+                $capture = New-Capture
+                Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                    Write-Information "Updates for vCenter appliance: $name"
+                    $group.Group | Sort-Object -Property Released -Descending | Format-Table -Wrap | Out-String -Width 300
+                }
+                New-Notification -Title "Updates for vCenter appliance: $name" -Body ($capture.ToString())
+            }
+        }
+    }
+}
+
