@@ -113,12 +113,10 @@ try {
                 }
 
                 Write-Information "Entrypoint finished"
-            } *>&1 |
-                Select-ForType -Type AutomationUtilsNotification -Derived -Process {
-                    Write-Information ("Notification generated: {0}" -f $_.Title)
-                    $_
-                } |
-                Send-Notifications -Name $ServiceName -Pass
+            } *>&1 | Select-ForType -Type AutomationUtilsNotification -Derived -Process {
+                Write-Information ("Notification generated: {0}" -f $_.Title)
+                $_
+            } | Send-Notifications -Name $ServiceName -Pass
         } catch {
             $_
             try { $_.ScriptStackTrace | Format-List } catch {}
@@ -135,9 +133,20 @@ try {
     try { $_.ScriptStackTrace | Format-List } catch {}
     Write-Information "Sending notification"
 
-    # Best effort convert capture to a string
+    # Best effort convert capture to a string and information on the exception
     $body = ""
-    try { $body = $capture.Content | Out-String } catch {}
+
+    try {
+        $body = $capture.Content | Out-String
+    } catch {}
+
+    try {
+        $body += $_ | Out-String
+    } catch {}
+
+    try {
+        $body += $_.ScriptStackTrace | Format-List
+    } catch {}
 
     # Recipients
     $mailTo = $Env:MAIL_TO.Split(",").Trim()
