@@ -1220,12 +1220,20 @@ Register-Automation -Name vmware.vcenter_patch_check -ScriptBlock {
         $allUpdates = $Servers | ForEach-Object {
             $server = $_
 
+            Write-Information "Checking vCenter patches for: $server"
             try {
                 # Retrieve pending updates
                 $pending = Get-CisService -Server $server -Name com.vmware.appliance.update.pending
                 $updates = $pending.list("LOCAL_AND_ONLINE")
             } catch {
                 $err = $_
+
+                # An exception is generated when no updates are found
+                if ([string]$err -like "*no_updates_found*")
+                {
+                    # Don't record this as an error
+                    return
+                }
 
                 Write-Information "Failed to list updates for $server"
                 $failed += [PSCustomObject]@{
@@ -1284,6 +1292,8 @@ Register-Automation -Name vmware.vcenter_patch_check -ScriptBlock {
         # Notify of available updates
         if (($allUpdates | Measure-Object).Count -gt 0)
         {
+            Write-Information "Found pending vCenter patches"
+
             $groups = $allUpdates | Group-Object -Property Server
 
             $groups | ForEach-Object {
@@ -1298,6 +1308,8 @@ Register-Automation -Name vmware.vcenter_patch_check -ScriptBlock {
                 }
                 New-Notification -Title "Updates for vCenter appliance: $name" -Body ($capture.ToString())
             }
+        } else {
+            Write-Information "No pending vCenter patches found"
         }
     }
 }
