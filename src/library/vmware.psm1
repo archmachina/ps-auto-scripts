@@ -1021,7 +1021,7 @@ Register-Automation -Name vmware.vmhost_time_check -ScriptBlock {
     }
 }
 
-Function Get-VMwareEntityLatency
+Function Get-VMwareEntityStats
 {
     param(
         [Parameter(Mandatory=$true,ValueFromPipeline)]
@@ -1030,24 +1030,57 @@ Function Get-VMwareEntityLatency
 
         [Parameter(Mandatory=$true)]
         [ValidateNotNull()]
-        [int]$AgeHours
+        [int]$AgeHours,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Stat,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$Realtime = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$IntervalMins = 5,
+
+        [Parameter(Mandatory=$false)]
+        $MissingValue = $null
     )
 
     process
     {
-        $latency = $Entity | Get-Stat -Start ([DateTime]::Now.AddHours(-($AgeHours))) -Stat "disk.maxTotalLatency.latest" -EA Ignore
-
-        if ($null -ne $latency -and ($latency | Measure-Object).Count -gt 0)
-        {
-            $measure = $latency | Measure-Object -Maximum -Average -Property Value
-            [PSCustomObject]@{
-                Name = $Entity.Name
-                Maximum = [Math]::Round($measure.Maximum, 2)
-                Average = [Math]::Round($measure.Average, 2)
-            }
-        } else {
-            Write-Information ("Can't retrieve latency information for {0}" -f $Entity.name)
+        # Collect stats information for the entity
+        $params = @{
+            Stat = $Stat
+            Start = ([DateTime]::Now.AddHours(-($AgeHours)))
+            Realtime = $Realtime
+            IntervalMins = $IntervalMins
+            ErrorAction = "Ignore"
         }
+        $statRecords = $Entity | Get-Stat @params
+
+        # Result object
+        $result = [PSCustomObject]@{
+            Name = $Entity.Name
+            Stats = $statRecords
+            Minimum = $MissingValue
+            Average = $MissingValue
+            Maximum = $MissingValue
+        }
+
+        # Extract summary information from the stats
+        if ($null -ne $statRecords)
+        {
+            $summary = ($statRecords | Measure-Object -Maximum -Average -Minimum -Property Value)
+
+            $result.Minimum = [Math]::Round($summary.Minimum, 2)
+            $result.Average = [Math]::Round($summary.Average, 2)
+            $result.Maximum = [Math]::Round($summary.Maximum, 2)
+        }
+
+        # Pass on the result object
+        $result
     }
 }
 
@@ -1087,11 +1120,11 @@ Register-Automation -Name vmware.vm_latency -ScriptBlock {
         $AgeHours = [Math]::Abs($AgeHours)
 
         # For each VM, retrieve the disk latency
-        $records = $vms | Get-VMwareEntityLatency -AgeHours $AgeHours
+        $records = $vms | Get-VMwareEntityStats -AgeHours $AgeHours -Stat "disk.maxTotalLatency.latest" -MissingValue 0
 
         # Record VM latency for logs
         Write-Information "VM latency"
-        $records | Format-Table -Wrap | Out-String -Width 300
+        $records | Format-Table -Wrap -Property Name,Average,Maximum | Out-String -Width 300
 
         # Reporting on VMs with high uptime
         $highRecords = $records | Where-Object {
@@ -1113,7 +1146,7 @@ Register-Automation -Name vmware.vm_latency -ScriptBlock {
                 Write-Information "Average latency threshold: $ThresholdAvgMs"
                 Write-Information "Maximum latency threshold: $ThresholdMaxMs"
                 Write-Information ""
-                $highRecords | Format-Table -Wrap | Out-String -Width 300
+                $highRecords | Format-Table -Wrap -Property Name,Average,Maximum | Out-String -Width 300
             }
 
             New-Notification -Title "VMs with high disk latency" -Body ($capture.ToString())
@@ -1158,11 +1191,11 @@ Register-Automation -Name vmware.vmhost_latency -ScriptBlock {
         $AgeHours = [Math]::Abs($AgeHours)
 
         # For each VMHost, retrieve the disk latency
-        $records = $vmhosts | Get-VMwareEntityLatency -AgeHours $AgeHours
+        $records = $vmhosts | Get-VMwareEntityStats -AgeHours $AgeHours -Stat "disk.maxTotalLatency.latest" -MissingValue 0
 
         # Record VMHost latency for logs
         Write-Information "VMHost latency"
-        $records | Format-Table -Wrap | Out-String -Width 300
+        $records | Format-Table -Wrap -Property Name,Average,Maximum | Out-String -Width 300
 
         # Reporting on VMHosts with high uptime
         $highRecords = $records | Where-Object {
@@ -1184,7 +1217,7 @@ Register-Automation -Name vmware.vmhost_latency -ScriptBlock {
                 Write-Information "Average latency threshold: $ThresholdAvgMs"
                 Write-Information "Maximum latency threshold: $ThresholdMaxMs"
                 Write-Information ""
-                $highRecords | Format-Table -Wrap | Out-String -Width 300
+                $highRecords | Format-Table -Wrap -Property Name,Average,Maximum | Out-String -Width 300
             }
 
             New-Notification -Title "VMHosts with high disk latency" -Body ($capture.ToString())
@@ -1310,6 +1343,142 @@ Register-Automation -Name vmware.vcenter_patch_check -ScriptBlock {
             }
         } else {
             Write-Information "No pending vCenter patches found"
+        }
+    }
+}
+
+Register-Automation -Name vmware.vm_top_usage -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $vms,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 1,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$Cpu = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$Memory = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$Disk = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$Network = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$TopCount = 10,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$IntervalMins = 5
+    )
+
+    process
+    {
+        # Check input values
+        $AgeHours = [Math]::Abs($AgeHours)
+        $TopCount = [Math]::Abs($TopCount)
+
+        # Report on top CPU usage
+        if ($Cpu)
+        {
+            # Collect records
+            Write-Information "Collecting CPU usage stats"
+            $records = $vms |
+                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "cpu.usagemhz.average" -IntervalMins $IntervalMins |
+                Sort-Object -Property Average -Descending |
+                Select-Object -First $TopCount
+
+            # Display top usage
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Top CPU Usage (MHz)"
+                Write-Information ""
+                $records |
+                    Select-Object -Property Name,@{N="Average";E={ $_.Average.ToString("0.00") }} |
+                    Format-Table -Wrap -Property Name,Average | Out-String -Width 300
+            }
+
+            New-Notification -Title "Top CPU Usage (MHz)" -Body ($capture.ToString())
+        }
+
+        # Report on top disk usage
+        if ($Disk)
+        {
+            # Collect records
+            Write-Information "Collecting disk usage stats"
+            $records = $vms |
+                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "disk.usage.average" -IntervalMins $IntervalMins |
+                Sort-Object -Property Average -Descending |
+                Select-Object -First $TopCount
+
+            # Display top usage
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Top Disk Usage (KBps)"
+                Write-Information ""
+                $records |
+                    Select-Object -Property Name,@{N="Average";E={ $_.Average.ToString("0.00") }} |
+                    Format-Table -Wrap -Property Name,Average | Out-String -Width 300
+            }
+
+            New-Notification -Title "Top Disk Usage (KBps)" -Body ($capture.ToString())
+        }
+
+        # Report on top memory usage
+        if ($Memory)
+        {
+            # Collect records
+            Write-Information "Collecting memory usage stats"
+            $records = $vms |
+                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "mem.consumed.average" -IntervalMins $IntervalMins |
+                Sort-Object -Property Average -Descending |
+                Select-Object -First $TopCount
+
+            # Display top usage
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Top Memory Usage (MB)"
+                Write-Information ""
+                $records |
+                    Select-Object -Property Name,@{N="Average";E={ ($_.Average / 1024).ToString("0.00") }} |
+                    Format-Table -Wrap -Property Name,Average | Out-String -Width 300
+            }
+
+            New-Notification -Title "Top Memory Usage (MB)" -Body ($capture.ToString())
+        }
+
+        # Report on top network usage
+        if ($Network)
+        {
+            # Collect records
+            Write-Information "Collecting network usage stats"
+            $records = $vms |
+                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "net.usage.average" -IntervalMins $IntervalMins |
+                Sort-Object -Property Average -Descending |
+                Select-Object -First $TopCount
+
+            # Display top usage
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Top Network Usage (KBps)"
+                Write-Information ""
+                $records |
+                    Select-Object -Property Name,@{N="Average";E={ $_.Average.ToString("0.00") }} |
+                    Format-Table -Wrap -Property Name,Average | Out-String -Width 300
+            }
+
+            New-Notification -Title "Top Network Usage (KBps)" -Body ($capture.ToString())
         }
     }
 }
