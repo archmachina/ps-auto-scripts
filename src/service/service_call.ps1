@@ -137,14 +137,17 @@ try {
     $body = ""
 
     try {
-        $body = $capture.Content | Out-String
+        $body += "Capture Content: "
+        $body += $capture.Content | Out-String
     } catch {}
 
     try {
+        $body += "Exception: "
         $body += $_ | Out-String
     } catch {}
 
     try {
+        $body += "Stack Trace: "
         $body += $_.ScriptStackTrace | Format-List
     } catch {}
 
