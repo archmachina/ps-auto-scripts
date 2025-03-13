@@ -20,7 +20,7 @@ Import-Module AutomationUtils
 
 # Functions
 
-Function Replace-StringNewlines
+Function Replace-StringNewline
 {
     [CmdletBinding()]
     param(
@@ -99,7 +99,7 @@ Function Add-ObjToDict
 
         if ($Obj -is [System.Enum])
         {
-            $Dict[$Key] = $Obj | Out-String | Replace-StringNewlines -Replacement " "
+            $Dict[$Key] = $Obj | Out-String | Replace-StringNewline -Replacement " "
 
             return
         }
@@ -138,7 +138,7 @@ Function Add-ObjToDict
         }
 
         # Unknown type and not collection, so just convert to string
-        $Dict[$Key] = $Obj | Out-String | Replace-StringNewlines -Replacement " "
+        $Dict[$Key] = $Obj | Out-String | Replace-StringNewline -Replacement " "
     }
 }
 
@@ -841,7 +841,7 @@ Register-Automation -Name vmware.vmhost_compliance -ScriptBlock {
         New-Notification -Title "Host compliance state" -Body ($capture.ToString())
     }
 }
- 
+
 Register-Automation -Name vmware.vm_uptime_check -ScriptBlock {
     [CmdletBinding()]
     param(
