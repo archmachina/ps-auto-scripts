@@ -12,7 +12,7 @@ param(
     [string]$ServiceName,
 
     [Parameter(Mandatory=$true)]
-    [ValidateSet("present", "absent")]
+    [ValidateSet("present", "absent", "inactive")]
     [string]$State
 )
 
@@ -43,7 +43,11 @@ if ([string]::IsNullOrEmpty($taskPass))
 Function Enable-Schedule
 {
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$EnableTriggers = $false
+    )
 
     process
     {
@@ -59,15 +63,27 @@ Function Enable-Schedule
             New-ScheduledTaskAction @actionParams
         )
 
-        # Triggers for the scheduled task
-        # Need to call the schedule.ps1 script to collect triggers for the scheduled task
-        $triggers = & ([System.IO.Path]::Combine($ServiceRoot, $serviceName, "schedule.ps1"))
+        # Default trigger list for the scheduled task
+        # Set-ScheduledTask doesn't support an empty list for triggers, so the default is scheduled once in 1990.
+        # The task scheduler also doesn't support [DateTime]::MinValue (too old?), but 1990 works.
+        $triggers = @(
+            New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
+        )
 
-        $triggers | ForEach-Object {
-            if ($null -eq $_ -or $_.GetType().FullName -ne "Microsoft.Management.Infrastructure.CimInstance" -or
-                $_.CimClass.CimSuperClass.ToString() -ne "ROOT/Microsoft/Windows/TaskScheduler:MSFT_TaskTrigger")
-            {
-                Write-Error "Invalid object returned from the service schedule.ps1 script"
+        # Enable triggers for this scheduled task, if requested
+        if ($EnableTriggers)
+        {
+            # Triggers for the scheduled task
+            # Need to call the schedule.ps1 script to collect triggers for the scheduled task
+            $triggers = & ([System.IO.Path]::Combine($ServiceRoot, $serviceName, "schedule.ps1"))
+
+            Write-Information "Collecting trigger configuration for scheduled task"
+            $triggers | ForEach-Object {
+                if ($null -eq $_ -or $_.GetType().FullName -ne "Microsoft.Management.Infrastructure.CimInstance" -or
+                    $_.CimClass.CimSuperClass.ToString() -ne "ROOT/Microsoft/Windows/TaskScheduler:MSFT_TaskTrigger")
+                {
+                    Write-Error "Invalid object returned from the service schedule.ps1 script"
+                }
             }
         }
 
@@ -87,6 +103,7 @@ Function Enable-Schedule
                 User = $taskUser
                 Password = $taskPass
             }
+
             Register-ScheduledTask @registerParams | Out-Null
         } else {
             Write-Information "Task already exists"
@@ -134,8 +151,11 @@ Function Remove-Schedule
 
 switch ($State)
 {
-    "present" {
+    "inactive" {
         Enable-Schedule
+    }
+    "present" {
+        Enable-Schedule -EnableTriggers
     }
     "absent" {
         Remove-Schedule
