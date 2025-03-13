@@ -20,7 +20,7 @@ Import-Module AutomationUtils
 
 # Functions
 
-Function Replace-StringNewline
+Function Convert-StringNewLine
 {
     [CmdletBinding()]
     param(
@@ -99,7 +99,7 @@ Function Add-ObjToDict
 
         if ($Obj -is [System.Enum])
         {
-            $Dict[$Key] = $Obj | Out-String | Replace-StringNewline -Replacement " "
+            $Dict[$Key] = $Obj | Out-String | Convert-StringNewLine -Replacement " "
 
             return
         }
@@ -138,13 +138,14 @@ Function Add-ObjToDict
         }
 
         # Unknown type and not collection, so just convert to string
-        $Dict[$Key] = $Obj | Out-String | Replace-StringNewline -Replacement " "
+        $Dict[$Key] = $Obj | Out-String | Convert-StringNewLine -Replacement " "
     }
 }
 
 Function Get-VMSpec
 {
     [CmdletBinding()]
+    [OutputType([System.Collections.Hashtable])]
     param(
         [Parameter(Mandatory=$true,ValueFromPipeline)]
         [ValidateNotNull()]
@@ -818,13 +819,13 @@ Register-Automation -Name vmware.vmhost_compliance -ScriptBlock {
 
             if (($_ | Get-Member).Name -contains "NotCompliantPatches")
             {
-                $obj.NotCompliantPatches = ($_.NotCompliantPatches | Measure).Count | Out-String -NoNewline
+                $obj.NotCompliantPatches = ($_.NotCompliantPatches | Measure-Object).Count | Out-String -NoNewline
             }
 
             # Staged patches don't appear as 'NotCompliantPatches', so separate column for these
             if (($_ | Get-Member).Name -contains "StagedPatches")
             {
-                $obj.StagedPatches = ($_.StagedPatches | Measure).Count | Out-String -NoNewline
+                $obj.StagedPatches = ($_.StagedPatches | Measure-Object).Count | Out-String -NoNewline
             }
 
             $obj
@@ -1021,7 +1022,7 @@ Register-Automation -Name vmware.vmhost_time_check -ScriptBlock {
     }
 }
 
-Function Get-VMwareEntityStats
+Function Get-VMwareEntityStat
 {
     param(
         [Parameter(Mandatory=$true,ValueFromPipeline)]
@@ -1120,7 +1121,7 @@ Register-Automation -Name vmware.vm_latency -ScriptBlock {
         $AgeHours = [Math]::Abs($AgeHours)
 
         # For each VM, retrieve the disk latency
-        $records = $vms | Get-VMwareEntityStats -AgeHours $AgeHours -Stat "disk.maxTotalLatency.latest" -MissingValue 0
+        $records = $vms | Get-VMwareEntityStat -AgeHours $AgeHours -Stat "disk.maxTotalLatency.latest" -MissingValue 0
 
         # Record VM latency for logs
         Write-Information "VM latency"
@@ -1191,7 +1192,7 @@ Register-Automation -Name vmware.vmhost_latency -ScriptBlock {
         $AgeHours = [Math]::Abs($AgeHours)
 
         # For each VMHost, retrieve the disk latency
-        $records = $vmhosts | Get-VMwareEntityStats -AgeHours $AgeHours -Stat "disk.maxTotalLatency.latest" -MissingValue 0
+        $records = $vmhosts | Get-VMwareEntityStat -AgeHours $AgeHours -Stat "disk.maxTotalLatency.latest" -MissingValue 0
 
         # Record VMHost latency for logs
         Write-Information "VMHost latency"
@@ -1395,7 +1396,7 @@ Register-Automation -Name vmware.vm_top_usage -ScriptBlock {
             # Collect records
             Write-Information "Collecting CPU usage stats"
             $records = $vms |
-                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "cpu.usagemhz.average" -IntervalMins $IntervalMins |
+                Get-VMwareEntityStat -AgeHours $AgeHours -Stat "cpu.usagemhz.average" -IntervalMins $IntervalMins |
                 Sort-Object -Property Average -Descending |
                 Select-Object -First $TopCount
 
@@ -1418,7 +1419,7 @@ Register-Automation -Name vmware.vm_top_usage -ScriptBlock {
             # Collect records
             Write-Information "Collecting disk usage stats"
             $records = $vms |
-                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "disk.usage.average" -IntervalMins $IntervalMins |
+                Get-VMwareEntityStat -AgeHours $AgeHours -Stat "disk.usage.average" -IntervalMins $IntervalMins |
                 Sort-Object -Property Average -Descending |
                 Select-Object -First $TopCount
 
@@ -1441,7 +1442,7 @@ Register-Automation -Name vmware.vm_top_usage -ScriptBlock {
             # Collect records
             Write-Information "Collecting memory usage stats"
             $records = $vms |
-                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "mem.consumed.average" -IntervalMins $IntervalMins |
+                Get-VMwareEntityStat -AgeHours $AgeHours -Stat "mem.consumed.average" -IntervalMins $IntervalMins |
                 Sort-Object -Property Average -Descending |
                 Select-Object -First $TopCount
 
@@ -1464,7 +1465,7 @@ Register-Automation -Name vmware.vm_top_usage -ScriptBlock {
             # Collect records
             Write-Information "Collecting network usage stats"
             $records = $vms |
-                Get-VMwareEntityStats -AgeHours $AgeHours -Stat "net.usage.average" -IntervalMins $IntervalMins |
+                Get-VMwareEntityStat -AgeHours $AgeHours -Stat "net.usage.average" -IntervalMins $IntervalMins |
                 Sort-Object -Property Average -Descending |
                 Select-Object -First $TopCount
 
