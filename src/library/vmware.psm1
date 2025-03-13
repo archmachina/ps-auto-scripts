@@ -796,8 +796,30 @@ Register-Automation -Name vmware.vmhost_compliance -ScriptBlock {
         {
             Write-Information "Running compliance check against hosts"
             try {
-                $vmhosts | Test-Compliance
+                $state = $vmhosts | Test-Compliance -RunAsync
+                $start = [DateTime]::Now
+
+                while (($state | Where-Object { $null -eq $_.FinishTime } | Measure-Object).Count -gt 0)
+                {
+                    # Check run time
+                    if (([DateTime]::Now - $start).TotalSeconds -gt (10 * 60))
+                    {
+                        Write-Error "Host compliance check exceeded time limit"
+                    }
+
+                    Write-Information "Waiting for compliance check to finish"
+                    Start-Sleep -Seconds 30
+
+                    # Refresh tasks
+                    Write-Information "Refreshing task state"
+                    $state = $state | ForEach-Object { Get-Task -Id $_.Uid }
+
+                    # Display task state
+                    Write-Information "Task state:"
+                    $state | Format-Table -Wrap | Out-String -Width 300
+                }
             } catch {
+                $_ | Out-String
                 New-Notification -Title "Failed host compliance update" -Body ($_ | Out-String)
             }
         }
