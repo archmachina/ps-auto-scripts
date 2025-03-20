@@ -122,7 +122,28 @@ Register-Automation -Name fs_maint.purge_files -ScriptBlock {
             {
                 Write-Information "Dry Run - not purging"
             } else {
-                $purgeFiles | ForEach-Object { $_.Original } | Remove-Item -Force
+                $failed = @()
+
+                # Attempt to remove the files
+                $purgeFiles | ForEach-Object {
+                    $file = $_.Original
+
+                    try {
+                        Remove-Item -Force $file
+                    } catch {
+                        $failed += [PSCustomObject]@{
+                            FullName = $file.FullName
+                            Excetion = [str]$_
+                        }
+                    }
+                }
+
+                # Send a notification for any files that failed removal (whether notify is enabled or not)
+                $capture = New-Capture
+                Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                    Write-Information "Some files failed removal:"
+                    $failed | Format-Table -Wrap | Out-String -Width 300
+                }
             }
         }
     }
