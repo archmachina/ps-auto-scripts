@@ -144,6 +144,7 @@ Register-Automation -Name fs_maint.purge_files -ScriptBlock {
                     Write-Information "Some files failed removal:"
                     $failed | Format-Table -Wrap | Out-String -Width 300
                 }
+                New-Notification -Title "Some files failed removal" -Body ($capture.ToString())
             }
         }
     }
