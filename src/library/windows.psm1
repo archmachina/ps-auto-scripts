@@ -209,7 +209,7 @@ Register-Automation -Name active_directory.lockedout_user_log -ScriptBlock {
         Write-Information "XPath string: $xPath"
 
         # Get event logs that match the xpath search in Security
-        $result = Get-WinEventServers -Servers $Servers -LogName Security -Filter $xPath
+        $result = Get-WinEventServer -Servers $Servers -LogName Security -Filter $xPath
         $events = $result.Events
 
         # Notification for any failed servers
@@ -280,7 +280,7 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
         Write-Information "XPath string: $xPath"
 
         # Get event logs that match the xpath search in Security
-        $result = Get-WinEventServers -Servers $Servers -LogName Security -Filter $xPath
+        $result = Get-WinEventServer -Servers $Servers -LogName Security -Filter $xPath
         $events = $result.Events
 
         # Notification for any failed servers
@@ -377,7 +377,7 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
 
 }
 
-Function Get-WinEventServers
+Function Get-WinEventServer
 {
     param(
         [Parameter(Mandatory=$true)]
