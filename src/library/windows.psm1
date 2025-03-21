@@ -441,3 +441,120 @@ Function Get-WinEventServer
     }
 }
 
+Register-Automation -Name active_directory.os_check -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Server = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [string[]]$Ignore = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [string[]]$Deprecated = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Filter = "*",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$SearchBase = "",
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$Summary = $false
+    )
+
+    process
+    {
+        # Parameters for the AD computer query
+        $getParams = @{
+            Filter = $Filter
+            Properties = @("OperatingSystem")
+        }
+
+        if (![string]::IsNullOrEmpty($Server))
+        {
+            $getParams["Server"] = $Server
+        }
+
+        if (![string]::IsNullOrEmpty($SearchBase))
+        {
+            $getParams["SearchBase"] = $SearchBase
+        }
+
+        # Get a list of the in-scope systems
+        $systems = Get-ADComputer @getParams | Sort-Object -Property OperatingSystem
+
+        # Filter out systems based on ignore lists
+        # Ignore is processed before anything else, so anything ignored won't appear
+        # as deprecated or in anything
+        $systems = $systems | ForEach-Object {
+            $system = $_
+            if (($Ignore | Where-Object { $system.OperatingSystem -match $_ } | Measure-Object).Count -eq 0)
+            {
+                $system
+            }
+        }
+
+        # Are we reporting on deprecated operating systems
+        # This will just change the title of the notification
+        $deprecatedReport = $false
+        if (($Deprecated | Measure-Object).Count -gt 0)
+        {
+            $deprecatedReport = $true
+        }
+
+        # Filter for anything deprecated
+        if ($deprecatedReport)
+        {
+            $systems = $systems | ForEach-Object {
+                $system = $_
+                if (($Deprecated | Where-Object { $system.OperatingSystem -match $_ } | Measure-Object).Count -gt 0)
+                {
+                    $system
+                }
+            }
+        }
+
+        # Title for the generated notification. Summary or not and deprecated or not.
+        $title = ""
+        if ($deprecatedReport)
+        {
+            $title = "Deprecated "
+        }
+
+        $title += "Operating Systems"
+
+        if ($Summary)
+        {
+            $title += " Summary"
+        }
+
+        # Generate the notification
+        $capture = New-Capture
+        if ($Summary) {
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information $title
+                $systems | Group-Object -Property OperatingSystem | ForEach-Object {
+                    [PSCustomObject]@{
+                        Name = $_.Name
+                        Count = ($_.Group | Measure-Object).Count
+                    }
+                } | Format-Table -Wrap | Out-String -Width 300
+            }
+        } else {
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information $title
+                $systems | Format-Table -Property Name,OperatingSystem -Wrap | Out-String -Width 300
+            }
+        }
+
+        New-Notification -Title $title -Body ($capture.ToString())
+    }
+}
+
