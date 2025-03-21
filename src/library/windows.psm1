@@ -466,15 +466,22 @@ Register-Automation -Name active_directory.os_check -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [switch]$Summary = $false
+        [switch]$Summary = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeDays = 45
     )
 
     process
     {
+        # Make sure AgeDays is positive
+        $AgeDays = [Math]::Abs($AgeDays)
+
         # Parameters for the AD computer query
         $getParams = @{
             Filter = $Filter
-            Properties = @("OperatingSystem")
+            Properties = @("OperatingSystem", "LastLogonDate", "Enabled")
         }
 
         if (![string]::IsNullOrEmpty($Server))
@@ -488,7 +495,13 @@ Register-Automation -Name active_directory.os_check -ScriptBlock {
         }
 
         # Get a list of the in-scope systems
-        $systems = Get-ADComputer @getParams | Sort-Object -Property OperatingSystem
+        $systems = Get-ADComputer @getParams | Where-Object {
+            # Filter for machines that have logged on to the domain with the last 'AgeDays' days
+            $_.LastLogonDate -gt ([DateTime]::Now.AddDays(-($AgeDays)))
+        } | Where-Object {
+            # Only report on machines that are enabled
+            $_.Enabled
+        } | Sort-Object -Property OperatingSystem
 
         # Filter out systems based on ignore lists
         # Ignore is processed before anything else, so anything ignored won't appear
