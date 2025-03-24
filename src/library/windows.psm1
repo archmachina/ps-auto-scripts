@@ -508,3 +508,130 @@ Register-Automation -Name active_directory.os_check -ScriptBlock {
     }
 }
 
+Register-Automation -Name active_directory.account_management_events -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int[]]$Add = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int[]]$Remove = @()
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+        $ageSearch = $AgeHours * 60 * 60 * 1000
+
+        # Event IDs for account related activities
+        $eventids = [System.Collections.Generic.HashSet[int]]::New()
+        @(
+            # User Management
+            4720, 4722, 4723, 4724, 4725, 4726, 4738, 4740, 4767, 4780, 4781, 4794, 5376, 5377,
+
+            # Computer Management
+            4741, 4742, 4743,
+
+            # Security Group Management
+            4727, 4728, 4729, 4730, 4731, 4732, 4733, 4734, 4735, 4737, 4754, 4755, 4756, 4757, 4758, 4764
+        ) | ForEach-Object { $eventids.Add($_) | Out-Null }
+
+        # Process any Adds
+        $Add | ForEach-Object { $eventids.Add($_) | Out-Null }
+
+        # Process any Removes
+        $Remove | ForEach-Object { $eventids.Remove($_) | Out-Null }
+
+        # Split the events in to batches of 10 as xpath filter fails on large queries
+        $batches = @{}
+        $count = 0
+        foreach ($item in $eventids)
+        {
+            $index = [int]([Math]::Floor($count/10))
+            if (!$batches.ContainsKey($index))
+            {
+                $batches[$index] = @()
+            }
+
+            $batches[$index] += $item
+            $count++
+        }
+
+        # Query using each batch
+        $results = $batches.Values | ForEach-Object {
+            $batch =  $_
+
+            # Filter string for the event ids
+            $eventFilter = (($batch | ForEach-Object { "EventID=" + $_ }) -join " or ")
+
+            # XPath string
+            $xPath = "*[System[({0}) and TimeCreated[timediff(@SystemTime) <= {1}]]]" -f $eventFilter,$ageSearch
+            Write-Information "XPath string: $xPath"
+
+            # Get event logs that match the xpath search in Security
+            Get-WinEventServer -Servers $Servers -LogName Security -Filter $xPath
+        }
+
+        # Flatten events and failures
+        $events = $results |
+            ForEach-Object { $_.Events } |
+            ForEach-Object { $_ } |
+            Sort-Object -Property TimeCreated
+        $failures = $results |
+            ForEach-Object { $_.Failures } |
+            ForEach-Object { $_ } |
+            Group-Object -Property Name,Error |
+            ForEach-Object { $_.Group[0] }
+
+        # Notification for any failed servers
+        if (($failures | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Server log query failed"
+                $failures | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+
+        # Transform records
+        $records = $events | ForEach-Object {
+            $record = $_
+
+            [PSCustomObject]@{
+                Time = $record.TimeCreated
+                Machine = $record.MachineName
+                User = $record.UserId
+                EventId = $record.Id
+                Message = $record.Message
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} records" -f ($records | Measure-Object).Count)
+
+        # Notification for any account management events
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information ("Found {0} account management events" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Account Management Events" -Body ($capture.ToString())
+        }
+    }
+}
+
+
