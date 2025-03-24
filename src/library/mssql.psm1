@@ -11,6 +11,7 @@ $InformationPreference = "Continue"
 
 # Modules
 Import-Module AutomationUtils
+Import-Module $PSScriptRoot\common.psm1
 
 # Global vars
 $backupCheck = @"
@@ -996,6 +997,119 @@ Register-Automation -Name mssql.finished_job_duration -ScriptBlock {
             }
 
             New-Notification -Title "Finished jobs over threshold ($Name)" -Body ($capture.ToString())
+        }
+    }
+}
+
+Register-Automation -Name mssql.eventlog_failed_logins -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$GroupResults = $false,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [string[]]$UserIgnore = @(),
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExecuteFrom = ""
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+        $ageSearch = $AgeHours * 60 * 60 * 1000
+
+        # XPath string
+        $xPath = "*[System[band(Keywords,4503599627370496) and (EventID=18456) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
+        Write-Information "XPath string: $xPath"
+
+        # Get event logs that match the xpath search in Application
+        $result = Get-WinEventServer -Servers $Servers -LogName Application -Filter $xPath -ExecuteFrom $ExecuteFrom
+        $events = $result.Events
+
+        # Notification for any failed servers
+        if (($result.Failures | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Server log query failed"
+                $result.Failures | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+
+        # Transform records
+        $records = $events | ForEach-Object {
+            $record = $_
+
+            switch ($record.Id)
+            {
+                18456 {
+                    [PSCustomObject]@{
+                        Machine = $record.MachineName
+                        Time = $record.TimeCreated
+                        User = $record.Properties[0].Value
+                        Reason = $record.Properties[1].Value
+                        Source = $record.Properties[2].Value
+                    }
+
+                    break
+                }
+            }
+        }
+
+        # Ignore users that match the ignore filter
+        $records = $records | ForEach-Object {
+            $record = $_
+
+            foreach ($item in $UserIgnore)
+            {
+                if ($record.User -match $item)
+                {
+                    return
+                }
+            }
+
+            $record
+        }
+
+        # Group results and provide a count of the number of failed logins, if requested
+        if ($GroupResults)
+        {
+            $records = $records | Group-Object -Property Machine,User,Source,Reason | ForEach-Object {
+                [PSCustomObject]@{
+                    FailureCount = $_.Count
+                    Machine = $_.Group[0].Machine
+                    User = $_.Group[0].User
+                    Source = $_.Group[0].Source
+                    Reason = $_.Group[0].Reason
+                }
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} failed login logs" -f ($records | Measure-Object).Count)
+
+        # Notification for any failed logins
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information ("Found {0} failed logins" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+
+            New-Notification -Title "Failed logins" -Body ($capture.ToString())
         }
     }
 }
