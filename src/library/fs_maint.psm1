@@ -133,7 +133,7 @@ Register-Automation -Name fs_maint.purge_files -ScriptBlock {
                     } catch {
                         $failed += [PSCustomObject]@{
                             FullName = $file.FullName
-                            Excetion = [str]$_
+                            Exception = [string]$_
                         }
                     }
                 }
