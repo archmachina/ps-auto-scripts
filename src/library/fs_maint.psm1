@@ -139,12 +139,15 @@ Register-Automation -Name fs_maint.purge_files -ScriptBlock {
                 }
 
                 # Send a notification for any files that failed removal (whether notify is enabled or not)
-                $capture = New-Capture
-                Invoke-CaptureScript -Capture $capture -ScriptBlock {
-                    Write-Information "Some files failed removal:"
-                    $failed | Format-Table -Wrap | Out-String -Width 300
+                if (($failed | Measure-Object).Count -gt 0)
+                {
+                    $capture = New-Capture
+                    Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                        Write-Information "Some files failed removal:"
+                        $failed | Format-Table -Wrap | Out-String -Width 300
+                    }
+                    New-Notification -Title "Some files failed removal" -Body ($capture.ToString())
                 }
-                New-Notification -Title "Some files failed removal" -Body ($capture.ToString())
             }
         }
     }
