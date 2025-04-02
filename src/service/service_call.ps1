@@ -148,7 +148,7 @@ try {
 
     try {
         $body += "Stack Trace: "
-        $body += $_.ScriptStackTrace | Format-List
+        $body += ($_.ScriptStackTrace | Format-List | Out-String)
     } catch {}
 
     # Recipients
