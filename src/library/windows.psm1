@@ -634,4 +634,110 @@ Register-Automation -Name active_directory.account_management_events -ScriptBloc
     }
 }
 
+Register-Automation -Name windows.service_restart_logs -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$GroupResults = $false,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [string[]]$ServiceFilter,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExecuteFrom = ""
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+        $ageSearch = $AgeHours * 60 * 60 * 1000
+
+        # XPath string
+        $xPath = "*[System[(EventID=7036) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
+        Write-Information "XPath string: $xPath"
+
+        # Get event logs that match the xpath search in System
+        $result = Get-WinEventServer -Servers $Servers -LogName System -Filter $xPath -ExecuteFrom $ExecuteFrom
+        $events = $result.Events
+
+        # Notification for any failed servers
+        if (($result.Failures | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Failed server log query" -Script {
+                Write-Information "Server log query failed"
+                $result.Failures | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+
+        # Transform records
+        $records = $events | ForEach-Object {
+            $record = $_
+
+            switch ($record.Id)
+            {
+                7036 {
+                    [PSCustomObject]@{
+                        Machine = $record.MachineName
+                        Time = $record.TimeCreated
+                        Service = $record.Properties[0].Value
+                        State = $record.Properties[1].Value
+                    }
+
+                    break
+                }
+            }
+        }
+
+        # Filter logs
+        Write-Information ("Found {0} records before filter" -f ($records | Measure-Object).Count)
+        $records = $records | ForEach-Object {
+            $record = $_
+
+            foreach ($filter in $ServiceFilter) {
+                if ($record.Service -match $filter) {
+                    $record
+                    break
+                }
+            }
+        }
+        Write-Information ("{0} records after filter" -f ($records | Measure-Object).Count)
+
+        # Group results and provide a count of the number of failed logins, if requested
+        if ($GroupResults)
+        {
+            $records = $records | Group-Object -Property Machine,Service,State | ForEach-Object {
+                [PSCustomObject]@{
+                    Count = $_.Count
+                    Machine = $_.Group[0].Machine
+                    Service = $_.Group[0].Service
+                    State = $_.Group[0].State
+                }
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} restart logs" -f ($records | Measure-Object).Count)
+
+        # Notification for any restarts
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Restart logs" -Script {
+                Write-Information ("Found {0} restart logs" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+    }
+}
+
 

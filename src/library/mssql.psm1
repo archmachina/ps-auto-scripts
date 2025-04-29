@@ -1114,4 +1114,210 @@ Register-Automation -Name mssql.eventlog_failed_logins -ScriptBlock {
     }
 }
 
+Register-Automation -Name mssql.deadlock_logs -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$GroupResults = $false,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExecuteFrom = ""
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+        $ageSearch = $AgeHours * 60 * 60 * 1000
+
+        # XPath string
+        $xPath = "*[System[(EventID=1205) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
+        Write-Information "XPath string: $xPath"
+
+        # Get event logs that match the xpath search in Application
+        $result = Get-WinEventServer -Servers $Servers -LogName Application -Filter $xPath -ExecuteFrom $ExecuteFrom
+        $events = $result.Events
+
+        # Notification for any failed servers
+        if (($result.Failures | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Server log query failed"
+                $result.Failures | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+
+        # Transform records
+        $records = $events | ForEach-Object {
+            $record = $_
+
+            switch ($record.Id)
+            {
+                1205 {
+                    [PSCustomObject]@{
+                        Machine = $record.MachineName
+                        Time = $record.TimeCreated
+                        ProcessId = $record.Properties[0].Value
+                        Type = $record.Properties[1].Value
+                    }
+
+                    break
+                }
+            }
+        }
+
+        # Group results and provide a count of the number of failed logins, if requested
+        if ($GroupResults)
+        {
+            $records = $records | Group-Object -Property Machine,Type | ForEach-Object {
+                [PSCustomObject]@{
+                    Count = $_.Count
+                    Machine = $_.Group[0].Machine
+                    Type = $_.Group[0].Type
+                }
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} deadlock logs" -f ($records | Measure-Object).Count)
+
+        # Notification for any deadlocks
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Deadlock logs" -Script {
+                Write-Information ("Found {0} deadlock logs" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+    }
+}
+
+Register-Automation -Name mssql.restart_logs -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Servers,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$AgeHours = 24,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [switch]$GroupResults = $false,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ExecuteFrom = ""
+    )
+
+    process
+    {
+        # Make sure AgeHours is positive
+        $AgeHours = [Math]::Abs($AgeHours)
+        $ageSearch = $AgeHours * 60 * 60 * 1000
+
+        # XPath string
+        $xPath = "*[System[(EventID=17663 or EventID=17148 or EventID=100 or EventID=102) and TimeCreated[timediff(@SystemTime) <= {0}]]]" -f $ageSearch
+        Write-Information "XPath string: $xPath"
+
+        # Get event logs that match the xpath search in Application
+        $result = Get-WinEventServer -Servers $Servers -LogName Application -Filter $xPath -ExecuteFrom $ExecuteFrom
+        $events = $result.Events
+
+        # Notification for any failed servers
+        if (($result.Failures | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Failed server log query" -Script {
+                Write-Information "Server log query failed"
+                $result.Failures | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+
+        # Transform records
+        $records = $events | ForEach-Object {
+            $record = $_
+
+            switch ($record.Id)
+            {
+                17663 {
+                    [PSCustomObject]@{
+                        Machine = $record.MachineName
+                        Time = $record.TimeCreated
+                        Message = $record.Message
+                    }
+
+                    break
+                }
+
+                17148 {
+                    [PSCustomObject]@{
+                        Machine = $record.MachineName
+                        Time = $record.TimeCreated
+                        Message = $record.Message
+                    }
+
+                    break
+                }
+
+                101 {
+                    if ($record.ProviderName -like "*SQLAgent*") {
+                        [PSCustomObject]@{
+                            Machine = $record.MachineName
+                            Time = $record.TimeCreated
+                            Message = $record.Message
+                        }
+                    }
+
+                    break
+                }
+
+                102 {
+                    if ($record.ProviderName -like "*SQLAgent*") {
+                        [PSCustomObject]@{
+                            Machine = $record.MachineName
+                            Time = $record.TimeCreated
+                            Message = $record.Message
+                        }
+                    }
+
+                    break
+                }
+            }
+        }
+
+        # Group results and provide a count of the number of failed logins, if requested
+        if ($GroupResults)
+        {
+            $records = $records | Group-Object -Property Machine,Message | ForEach-Object {
+                [PSCustomObject]@{
+                    Count = $_.Count
+                    Message = $_.Group[0].Message
+                }
+            }
+        }
+
+        # Report for logs
+        Write-Information ("Found {0} restart logs" -f ($records | Measure-Object).Count)
+
+        # Notification for any restarts
+        if (($records | Measure-Object).Count -gt 0)
+        {
+            New-Notification -Title "Restart logs" -Script {
+                Write-Information ("Found {0} restart logs" -f ($records | Measure-Object).Count)
+                $records | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+    }
+}
 
