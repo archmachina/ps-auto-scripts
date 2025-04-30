@@ -1285,7 +1285,7 @@ Register-Automation -Name vmware.vcenter_patch_check -ScriptBlock {
                 $err = $_
 
                 # An exception is generated when no updates are found
-                if ([string]$err -like "*no_updates_found*")
+                if ([string]$err -like "*no_updates_found*" -or [string]$err -like "*not_found*")
                 {
                     # Don't record this as an error
                     return
