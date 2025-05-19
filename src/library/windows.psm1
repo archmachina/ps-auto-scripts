@@ -267,7 +267,11 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [string[]]$UserIgnore = @()
+        [string[]]$UserIgnore = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [int]$Threshold = 3
     )
 
     process
@@ -357,7 +361,11 @@ Register-Automation -Name active_directory.failed_logins -ScriptBlock {
                     Method = $_.Group[0].Method
                     LogonType = $_.Group[0].LogonType
                 }
+            } | Where-Object {
+                # Apply the threshold filter to the grouping
+                $_.FailureCount -ge $Threshold
             }
+
         }
 
         # Report for logs
