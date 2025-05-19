@@ -772,7 +772,7 @@ WHERE
 	AND sja.session_id = (
 		SELECT TOP 1 session_id FROM msdb.dbo.syssessions ORDER BY agent_start_date DESC
 	)
-	AND sjs.subsystem not in ( 'LogReader', 'Distribution' )
+	AND sjs.subsystem not in ( 'LogReader', 'Distribution', 'QueueReader' )
 "@
 
 Register-Automation -Name mssql.active_job_duration -ScriptBlock {
