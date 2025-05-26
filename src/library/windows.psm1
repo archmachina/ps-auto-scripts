@@ -748,4 +748,132 @@ Register-Automation -Name windows.service_restart_logs -ScriptBlock {
     }
 }
 
+Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [string[]]$SystemList,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [HashTable]$SystemConfig = @{},
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)
+        [int]$ThrottleLimit = 5
+    )
+
+    process
+    {
+        # Create state objects for each system
+        $states = $SystemList | ForEach-Object {
+            $config = @{}
+            if ($SystemConfig -contains $_)
+            {
+                $config = $SystemConfig[$_]
+            }
+
+            [PSCustomObject]@{
+                System = $_
+                Config = $config
+            }
+        }
+
+        # Process each system in the system list
+        $parentJob = $states | ForEach-Object -Parallel {
+            $state = $_
+
+            # Script settings
+            $ErrorActionPreference = "Stop"
+            $InformationPreference = "Continue"
+            Set-StrictMode -Version 2
+
+            # Extract the config
+            $config = $state.Config
+            $patch_day = $null
+            $patch_time = $null
+            if ($config -is [HashTable])
+            {
+                if ($config -contains "patch_day")
+                {
+                    $patch_day = [str]$config["patch_day"]
+                }
+
+                if ($config -contains "patch_time")
+                {
+                    $patch_time = [str]$config["patch_time"]
+                }
+            }
+
+            # Create a new session for the target
+            $session = New-PSSession -ComputerName $state.System
+
+            # Ensure the _patching directory exists
+            Invoke-Command -Session $session -ScriptBlock {
+                New-Item -ItemType Directory "C:\_patching" -EA Ignore
+
+                Get-Item "C:\_patching"
+            }
+
+            # Copy the patching script to the target
+            $script = [System.OS.Path]::Combine($PSScriptRoot, "patch_system.ps1")
+            Copy-Item $script "C:\_patching\" -ToSession $session
+
+            # Configure the reporting scheduled task
+            $action = New-ScheduledTaskAction -Execute powershell.exe -Argument "C:\_patching\patch_system.ps1"
+            $trigger = New-ScheduledTaskTrigger -At 1am -Daily -RandomDelay ([TimeSpan]::New(3, 0, 0))
+            $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+            $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+            # Attempt to create the task, but ignore failure
+            Register-ScheduledTask -Taskname "SystemPatching - Report" -InputObject $task -EA Ignore | Out-Null
+
+            # Update settings for the scheduled task
+            Set-ScheduledTask -TaskName "SystemPatching - Report" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+
+            # Configure the patching scheduled task
+            $action = New-ScheduledTaskAction -Execute powershell.exe -Argument "C:\_patching\patch_system.ps1 -Install -CanReboot"
+            $trigger = @()
+            if ($null -ne $patch_day -and $null -ne $patch_time)
+            {
+                $trigger = New-ScheduledTaskTrigger -At $patch_time -Weekly -DaysOfWeek $patch_day
+            }
+
+            $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+            $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+            # Attempt to create the task, but ignore failure
+            Register-ScheduledTask -Taskname "SystemPatching - Install" -InputObject $task -EA Ignore | Out-Null
+
+            # Update settings for the scheduled task
+            Set-ScheduledTask -TaskName "SystemPatching - Install" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+
+        } -ThrottleLimit $ThrottleLimit -AsJob
+
+        # Process child jobs
+        while ($true)
+        {
+            # Receive any child jobs
+            $finished = $parent.ChildJobs | Where-Object { $null -ne $_.PSEndTime }
+            $finished | Receive-Job
+
+            # Stop any jobs that have taken too long (hung accessing a remote system?)
+            $stuck = $parent.ChildJobs | Where-Object { $_.PSBeginTime -lt ([DateTime]::Now.AddMinutes(-3) }
+            $stuck | ForEach-Object { Stop-Job $_ }
+
+            # Remove the parent job if everything is finished
+            if ($null -ne $parent.PSEndTime)
+            {
+                Receive-Job $parent
+                Remove-Job $parent
+                break
+            }
+
+            # Wait for more jobs to complete
+            Start-Sleep -Seconds 5
+        }
+    }
+}
 
