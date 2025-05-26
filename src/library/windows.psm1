@@ -13,6 +13,8 @@ $InformationPreference = "Continue"
 Import-Module ActiveDirectory
 Import-Module $PSScriptRoot\common.psm1
 
+$location = $PSScriptRoot
+
 # Functions
 
 Register-Automation -Name active_directory.inactive_users -ScriptBlock {
@@ -753,7 +755,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
     param(
         [Parameter(Mandatory=$true)]
         [ValidateNotNull()]
-        [string[]]$SystemList,
+        [string[]]$Systems,
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
@@ -761,14 +763,28 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [ValidateRange(1, [int]::MaxValue)
-        [int]$ThrottleLimit = 5
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$ThrottleLimit = 5,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$JobLimitSeconds = 60,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$TotalLimitSeconds = (60 * 5),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$PatchScript = ([System.IO.Path]::Combine($location, "patch_script.ps1"))
     )
 
     process
     {
         # Create state objects for each system
-        $states = $SystemList | ForEach-Object {
+        $states = $Systems | ForEach-Object {
             $config = @{}
             if ($SystemConfig -contains $_)
             {
@@ -812,14 +828,14 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
 
             # Ensure the _patching directory exists
             Invoke-Command -Session $session -ScriptBlock {
-                New-Item -ItemType Directory "C:\_patching" -EA Ignore
+                New-Item -ItemType Directory "C:\_patching" -EA Ignore | Out-Null
 
-                Get-Item "C:\_patching"
+                Get-Item "C:\_patching" | Out-Null
             }
 
             # Copy the patching script to the target
-            $script = [System.OS.Path]::Combine($PSScriptRoot, "patch_system.ps1")
-            Copy-Item $script "C:\_patching\" -ToSession $session
+            #$script = [System.IO.Path]::Combine($PatchScript, "patch_system.ps1")
+            Copy-Item $PatchScript "C:\_patching\" -ToSession $session
 
             # Configure the reporting scheduled task
             $action = New-ScheduledTaskAction -Execute powershell.exe -Argument "C:\_patching\patch_system.ps1"
@@ -835,7 +851,12 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
 
             # Configure the patching scheduled task
             $action = New-ScheduledTaskAction -Execute powershell.exe -Argument "C:\_patching\patch_system.ps1 -Install -CanReboot"
-            $trigger = @()
+            $trigger = @(
+                # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
+                # empty trigger list is provided
+                New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
+            )
+
             if ($null -ne $patch_day -and $null -ne $patch_time)
             {
                 $trigger = New-ScheduledTaskTrigger -At $patch_time -Weekly -DaysOfWeek $patch_day
@@ -853,21 +874,34 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
         } -ThrottleLimit $ThrottleLimit -AsJob
 
         # Process child jobs
+        $start = [DateTime]::Now
         while ($true)
         {
             # Receive any child jobs
-            $finished = $parent.ChildJobs | Where-Object { $null -ne $_.PSEndTime }
+            $finished = $parentJob.ChildJobs | Where-Object { $null -ne $_.PSEndTime }
             $finished | Receive-Job
 
             # Stop any jobs that have taken too long (hung accessing a remote system?)
-            $stuck = $parent.ChildJobs | Where-Object { $_.PSBeginTime -lt ([DateTime]::Now.AddMinutes(-3) }
-            $stuck | ForEach-Object { Stop-Job $_ }
+            $parentJob.ChildJobs | Where-Object {
+                $_.PSBeginTime -lt ([DateTime]::Now.AddSeconds(-$JobLimitSeconds)) -and $null -ne $_.PSEndTime
+            } | ForEach-Object {
+                Write-Information "Found stuck job: $_"
+                Stop-Job $_
+            }
+
+            # Stop all jobs if over the threshold
+            if ([DateTime]::Now -gt $start.AddSeconds($TotalLimitSeconds))
+            {
+                $parentJob.ChildJobs | Stop-Job
+                Stop-Job $parentJob
+                break
+            }
 
             # Remove the parent job if everything is finished
-            if ($null -ne $parent.PSEndTime)
+            if ($null -ne $parentJob.PSEndTime)
             {
-                Receive-Job $parent
-                Remove-Job $parent
+                Receive-Job $parentJob
+                Remove-Job $parentJob
                 break
             }
 
@@ -875,5 +909,5 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
             Start-Sleep -Seconds 5
         }
     }
-}
+}.GetNewClosure()
 
