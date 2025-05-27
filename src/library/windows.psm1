@@ -13,8 +13,6 @@ $InformationPreference = "Continue"
 Import-Module ActiveDirectory
 Import-Module $PSScriptRoot\common.psm1
 
-$location = $PSScriptRoot
-
 # Functions
 
 Register-Automation -Name active_directory.inactive_users -ScriptBlock {
@@ -755,11 +753,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
     param(
         [Parameter(Mandatory=$true)]
         [ValidateNotNull()]
-        [string[]]$Systems,
-
-        [Parameter(Mandatory=$false)]
-        [ValidateNotNull()]
-        [HashTable]$SystemConfig = @{},
+        [HashTable]$Systems,
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
@@ -778,26 +772,40 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNullOrEmpty()]
-        [string]$PatchScript = ([System.IO.Path]::Combine($location, "patch_script.ps1"))
+        [string]$Proxy = $null
     )
 
     process
     {
         # Create state objects for each system
-        $states = $Systems | ForEach-Object {
-            $config = @{}
-            if ($SystemConfig -contains $_)
-            {
-                $config = $SystemConfig[$_]
+        $states = $Systems.Keys | ForEach-Object {
+            $system = [string]$_
+            $config = [HashTable]$Systems[$system]
+
+            $obj = @{
+                System = $system
+                Config = $config
+                ScriptPath = ([System.IO.Path]::Combine($PSScriptRoot, "patch_system.ps1"))
+                Proxy = $Proxy
+                ReportSchedule = $null
+                InstallSchedule = $null
             }
 
-            [PSCustomObject]@{
-                System = $_
-                Config = $config
+            if ($config -contains "report_schedule")
+            {
+                $obj["ReportSchedule"] = [HashTable]$config["report_schedule"]
             }
+
+            if ($config -contains "install_schedule")
+            {
+                $obj["InstallSchedule"] = [HashTable]$config["install_schedule"]
+            }
+
+            [PSCustomObject]$obj
         }
 
         # Process each system in the system list
+        Write-Information "Scheduling patch install for systems"
         $parentJob = $states | ForEach-Object -Parallel {
             $state = $_
 
@@ -808,25 +816,17 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
 
             # Extract the config
             $config = $state.Config
-            $patch_day = $null
-            $patch_time = $null
-            if ($config -is [HashTable])
-            {
-                if ($config -contains "patch_day")
-                {
-                    $patch_day = [str]$config["patch_day"]
-                }
+            $system = $state.System
 
-                if ($config -contains "patch_time")
-                {
-                    $patch_time = [str]$config["patch_time"]
-                }
-            }
+            # Display config
+            Write-Information ("${system}: System config: " + ($state | ConvertTo-Json))
 
             # Create a new session for the target
+            Write-Information "${system}: Creating PSSession"
             $session = New-PSSession -ComputerName $state.System
 
             # Ensure the _patching directory exists
+            Write-Information "${system}: Creating _patching directory"
             Invoke-Command -Session $session -ScriptBlock {
                 New-Item -ItemType Directory "C:\_patching" -EA Ignore | Out-Null
 
@@ -834,52 +834,113 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
             }
 
             # Copy the patching script to the target
-            #$script = [System.IO.Path]::Combine($PatchScript, "patch_system.ps1")
-            Copy-Item $PatchScript "C:\_patching\" -ToSession $session
+            Write-Information "${system}: Copying script"
+            Copy-Item -Force $state.ScriptPath "C:\_patching\" -ToSession $session
 
             # Configure the reporting scheduled task
-            $action = New-ScheduledTaskAction -Execute powershell.exe -Argument "C:\_patching\patch_system.ps1"
-            $trigger = New-ScheduledTaskTrigger -At 1am -Daily -RandomDelay ([TimeSpan]::New(3, 0, 0))
-            $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-            $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+            Write-Information "${system}: Creating report scheduled task"
+            Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
+                param($state)
 
-            # Attempt to create the task, but ignore failure
-            Register-ScheduledTask -Taskname "SystemPatching - Report" -InputObject $task -EA Ignore | Out-Null
+                # Settings
+                $ErrorActionPreference = "Stop"
+                $InformationPreference = "Continue"
+                Set-StrictMode -Version 2
 
-            # Update settings for the scheduled task
-            Set-ScheduledTask -TaskName "SystemPatching - Report" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+                $argument = "C:\_patching\patch_system.ps1"
+                if (![string]::IsNullOrEmpty($state.Proxy))
+                {
+                    $argument += (" -Proxy " + $state.Proxy)
+                }
+                $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
 
-            # Configure the patching scheduled task
-            $action = New-ScheduledTaskAction -Execute powershell.exe -Argument "C:\_patching\patch_system.ps1 -Install -CanReboot"
-            $trigger = @(
-                # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
-                # empty trigger list is provided
-                New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
-            )
+                # Trigger to run the scheduled task
+                $trigger = @(
+                    # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
+                    # empty trigger list is provided
+                    New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
+                )
 
-            if ($null -ne $patch_day -and $null -ne $patch_time)
-            {
-                $trigger = New-ScheduledTaskTrigger -At $patch_time -Weekly -DaysOfWeek $patch_day
+                $report_schedule = $state.ReportSchedule
+                if ($null -ne $report_schedule)
+                {
+                    Write-Information ("Report trigger: " + ($report_schedule | ConvertTo-Json))
+                    $trigger = New-ScheduledTaskTrigger @report_schedule
+                }
+
+                $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+                $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+                # Attempt to create the task, but ignore failure
+                Register-ScheduledTask -Taskname "SystemPatching - Report" -InputObject $task -EA Ignore | Out-Null
+
+                # Update settings for the scheduled task
+                Set-ScheduledTask -TaskName "SystemPatching - Report" -Trigger $trigger -Action $action -Principal $principal | Out-Null
             }
 
-            $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-            $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+            # Configure the patching scheduled task
+            Write-Information "${system}: Creating patch scheduled task"
+            Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
+                param($state)
 
-            # Attempt to create the task, but ignore failure
-            Register-ScheduledTask -Taskname "SystemPatching - Install" -InputObject $task -EA Ignore | Out-Null
+                # Settings
+                $ErrorActionPreference = "Stop"
+                $InformationPreference = "Continue"
+                Set-StrictMode -Version 2
 
-            # Update settings for the scheduled task
-            Set-ScheduledTask -TaskName "SystemPatching - Install" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+                $argument = "C:\_patching\patch_system.ps1 -Install -CanReboot"
+                if (![string]::IsNullOrEmpty($state.Proxy))
+                {
+                    $argument += (" -Proxy " + $state.Proxy)
+                }
+                $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
+
+                # Trigger to run the scheduled task
+                $trigger = @(
+                    # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
+                    # empty trigger list is provided
+                    New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
+                )
+
+                $install_schedule = $state.InstallSchedule
+                if ($null -ne $install_schedule)
+                {
+                    Write-Information ("Install trigger: " + ($install_schedule | ConvertTo-Json))
+                    $trigger = New-ScheduledTaskTrigger @install_schedule
+                }
+
+                $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+                $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+                # Attempt to create the task, but ignore failure
+                Register-ScheduledTask -Taskname "SystemPatching - Install" -InputObject $task -EA Ignore | Out-Null
+
+                # Update settings for the scheduled task
+                Set-ScheduledTask -TaskName "SystemPatching - Install" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+            }
+
+            Write-Information "${system}: Completed patching task refresh"
 
         } -ThrottleLimit $ThrottleLimit -AsJob
 
         # Process child jobs
         $start = [DateTime]::Now
+        Write-Information "Processing child jobs"
         while ($true)
         {
             # Receive any child jobs
-            $finished = $parentJob.ChildJobs | Where-Object { $null -ne $_.PSEndTime }
-            $finished | Receive-Job
+            $parentJob.ChildJobs | Where-Object {
+                $null -ne $_.PSEndTime -and $_.HasMoreData
+            } | ForEach-Object {
+                $job = $_
+
+                try {
+                    Receive-Job $job
+                } catch {
+                    Write-Information "Exception from job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
+            }
 
             # Stop any jobs that have taken too long (hung accessing a remote system?)
             $parentJob.ChildJobs | Where-Object {
@@ -892,15 +953,27 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
             # Stop all jobs if over the threshold
             if ([DateTime]::Now -gt $start.AddSeconds($TotalLimitSeconds))
             {
-                $parentJob.ChildJobs | Stop-Job
+                Write-Information "Over threshold for time. Stopping jobs"
                 Stop-Job $parentJob
+                try {
+                    Receive-Job $parentJob
+                } catch {
+                    Write-Information "Exception receiving parent job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
                 break
             }
 
             # Remove the parent job if everything is finished
             if ($null -ne $parentJob.PSEndTime)
             {
-                Receive-Job $parentJob
+                Write-Information "Parent job finished"
+                try {
+                    Receive-Job $parentJob
+                } catch {
+                    Write-Information "Exception receiving parent job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
                 Remove-Job $parentJob
                 break
             }
@@ -909,5 +982,5 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
             Start-Sleep -Seconds 5
         }
     }
-}.GetNewClosure()
+}
 

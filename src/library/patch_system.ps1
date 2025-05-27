@@ -14,7 +14,11 @@ param(
 
     [Parameter(Mandatory=$false)]
     [ValidateNotNull()]
-    [switch]$CanReboot = $false
+    [switch]$CanReboot = $false,
+
+    [Parameter(Mandatory=$false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Proxy = $null
 )
 
 # Global settings
@@ -27,9 +31,34 @@ try {
     $PSStyle.OutputRendering = [System.Management.Automation.OutputRendering]::PlainText
 } catch {}
 
+# Proxy configuration
+if (![string]::IsNullOrEmpty($Proxy))
+{
+    $Env:HTTP_PROXY = $Proxy
+    $Env:HTTPS_PROXY = $Proxy
+
+    try {
+        [System.Net.Http.HttpClient]::DefaultProxy = [System.Net.WebProxy]::new($proxy)
+        [System.Net.Http.HttpClient]::DefaultProxy.BypassProxyOnLocal = $true
+    } catch {
+        Write-Information "Failed to set HttpClient proxy: $_"
+    }
+
+    try {
+        [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($proxy)
+        [System.Net.WebRequest]::DefaultWebProxy.BypassProxyOnLocal = $true
+    } catch {
+        Write-Information "Failed to set WebRequest proxy: $_"
+    }
+}
+
 # Import modules
-Install-Module -Scope CurrentUser WinUpd -EA Ignore
-Update-Module WinUpd -EA Ignore
+# Older versions of powershell don't seem to support '-EA Ignore'
+$ErrorActionPreference = "Ignore"
+Install-Module -Scope CurrentUser WinUpd
+Update-Module WinUpd
+
+$ErrorActionPreference = "Stop"
 Import-Module WinUpd
 
 # Global Variables
@@ -75,6 +104,9 @@ Function LogMessage
         }
     }
 }
+
+# Make sure we start in the script directory
+Set-Location $PSScriptRoot
 
 # Truncate log file
 if (![string]::IsNullOrEmpty($LogFile))
