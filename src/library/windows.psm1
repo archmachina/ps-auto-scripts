@@ -847,7 +847,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                 $InformationPreference = "Continue"
                 Set-StrictMode -Version 2
 
-                $argument = "C:\_patching\patch_system.ps1"
+                $argument = "-NonInteractive C:\_patching\patch_system.ps1"
                 if (![string]::IsNullOrEmpty($state.Proxy))
                 {
                     $argument += (" -Proxy " + $state.Proxy)
@@ -888,7 +888,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                 $InformationPreference = "Continue"
                 Set-StrictMode -Version 2
 
-                $argument = "C:\_patching\patch_system.ps1 -Install -CanReboot"
+                $argument = "-NonInteractive C:\_patching\patch_system.ps1 -Install -CanReboot"
                 if (![string]::IsNullOrEmpty($state.Proxy))
                 {
                     $argument += (" -Proxy " + $state.Proxy)

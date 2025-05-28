@@ -180,11 +180,43 @@ if (![string]::IsNullOrEmpty($LogFile))
         $patches = Get-WinUpdUpdates
         $patches | Format-Table -Property LastDeploymentChangeTime,MsrcSeverity,Title | Out-String
 
+        "Writing raw patch list to json"
+        $patches |
+            Select-Object -ExcludeProperty DownloadContents |
+            ConvertTo-Json -Depth 4 |
+            Out-File -Encoding UTF8 "patches_raw.json"
+
         "Writing patch list to json"
-        $patches | ConvertTo-Json -Depth 4 | Out-File -Encoding UTF8 "patches.json"
+        $patches |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Title = $_.Title
+                    RebootRequired = $_.RebootRequired
+                    LastDeploymentChangeTime = $_.LastDeploymentChangeTime.ToString("o")
+                    KBArticleIDs = $_.KBArticleIDs
+                    Description = $_.Description
+                    Categories = $_.Categories
+                    MsrcSeverity = $_.MsrcSeverity
+                    CveIDs = $_.CveIDs
+                }
+            } |
+            ConvertTo-Json -Depth 4 |
+            Out-File -Encoding UTF8 "patches.json"
 
         "Writing patch list to CSV"
-        $patches | Export-CSV -Encoding UTF8 "patches.csv"
+        $patches |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Title = $_.Title
+                    RebootRequired = $_.RebootRequired
+                    LastDeploymentChangeTime = $_.LastDeploymentChangeTime.ToString("o")
+                    KBArticleIDs = [string]::Join(", ", $_.KBArticleIDs)
+                    Description = $_.Description
+                    MsrcSeverity = $_.MsrcSeverity
+                    CveIDs = [string]::Join(", ", $_.CveIDs)
+                }
+            } |
+            Export-CSV -NoTypeInformation -Encoding UTF8 "patches.csv"
 
         ("Reboot required: " + (Get-WinUpdRebootRequired))
 
