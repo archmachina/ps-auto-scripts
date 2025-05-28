@@ -18,7 +18,11 @@ param(
 
     [Parameter(Mandatory=$false)]
     [ValidateNotNullOrEmpty()]
-    [string]$Proxy = $null
+    [string]$Proxy = $null,
+
+    [Parameter(Mandatory=$false)]
+    [ValidateNotNull()]
+    [switch]$UseCab = $false
 )
 
 # Global settings
@@ -152,17 +156,26 @@ if (![string]::IsNullOrEmpty($LogFile))
         "Importing WinUpd"
         Import-Module WinUpd
 
-        "Updating cab file"
-        Update-WinUpdCabFile -Path $CabFile -Verbose
+        $updArgs = @{}
+        if ($UseCab)
+        {
+            "Updating cab file"
+            try {
+                Update-WinUpdCabFile -Path $CabFile -Verbose
+            } catch {
+                "Failed to update cab file: $_"
+            }
 
-        "Update scan service"
-        $serviceId = Update-WinUpdOfflineScan -CabFile $CabFile -Verbose
+            "Update scan service"
+            $serviceId = Update-WinUpdOfflineScan -CabFile $CabFile -Verbose
+            $updArgs["ServiceId"] = $serviceId
+        }
 
         # Are we installing patches
         if ($Install)
         {
             "Retrieving a patch list for install"
-            $patches = Get-WinUpdUpdates
+            $patches = Get-WinUpdUpdates @updArgs
 
             $age = [Math]::Abs($AgeThreshold)
 
@@ -186,11 +199,11 @@ if (![string]::IsNullOrEmpty($LogFile))
         "Writing raw patch list to json"
         $patches |
             Select-Object -ExcludeProperty DownloadContents |
-            ConvertTo-Json -Depth 4 |
+            ConvertTo-Json |
             Out-File -Encoding UTF8 "patches_raw.json"
 
         "Writing patch list to json"
-        $patches |
+        $summaryPatches = $patches |
             ForEach-Object {
                 [PSCustomObject]@{
                     Title = $_.Title
@@ -202,8 +215,9 @@ if (![string]::IsNullOrEmpty($LogFile))
                     MsrcSeverity = $_.MsrcSeverity
                     CveIDs = $_.CveIDs
                 }
-            } |
-            ConvertTo-Json -Depth 4 |
+            }
+        $summaryPatches |
+            ConvertTo-Json |
             Out-File -Encoding UTF8 "patches.json"
 
         "Writing patch list to CSV"
@@ -220,6 +234,18 @@ if (![string]::IsNullOrEmpty($LogFile))
                 }
             } |
             Export-CSV -NoTypeInformation -Encoding UTF8 "patches.csv"
+
+        # Write a system state out to file
+        "Writing system state json"
+        $patchState = [PSCustomObject]@{
+            Hostname = ([System.Net.DNS]::GetHostname())
+            DateUtc = [DateTime]::UtcNow
+            DateUtcStr = [DateTime]::UtcNow.ToString("o")
+            Updates = $summaryPatches
+            CabModificationTime = (Get-Item $CabFile).LastWriteTimeUtc
+            CabModificationTimeStr = (Get-Item $CabFile).LastWriteTimeUtc.ToString("o")
+        }
+        $patchState | ConvertTo-Json -Depth 5 | Out-File -Encoding UTF8 "state.json"
 
         ("Reboot required: " + (Get-WinUpdRebootRequired))
 

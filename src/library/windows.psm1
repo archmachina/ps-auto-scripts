@@ -849,7 +849,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                     $InformationPreference = "Continue"
                     Set-StrictMode -Version 2
 
-                    $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1"
+                    $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1 -UseCab"
                     if (![string]::IsNullOrEmpty($state.Proxy))
                     {
                         $argument += (" -Proxy " + $state.Proxy)
@@ -889,7 +889,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                     $InformationPreference = "Continue"
                     Set-StrictMode -Version 2
 
-                    $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1 -Install -CanReboot"
+                    $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1 -Install -CanReboot -UseCab"
                     if (![string]::IsNullOrEmpty($state.Proxy))
                     {
                         $argument += (" -Proxy " + $state.Proxy)
