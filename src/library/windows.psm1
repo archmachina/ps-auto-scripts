@@ -748,4 +748,239 @@ Register-Automation -Name windows.service_restart_logs -ScriptBlock {
     }
 }
 
+Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [HashTable]$Systems,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$ThrottleLimit = 5,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$JobLimitSeconds = 60,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$TotalLimitSeconds = (60 * 5),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Proxy = $null
+    )
+
+    process
+    {
+        # Create state objects for each system
+        $states = $Systems.Keys | ForEach-Object {
+            $system = [string]$_
+            $config = [HashTable]$Systems[$system]
+
+            $obj = @{
+                System = $system
+                Config = $config
+                ScriptPath = ([System.IO.Path]::Combine($PSScriptRoot, "patch_system.ps1"))
+                Proxy = $Proxy
+                ReportSchedule = $null
+                InstallSchedule = $null
+            }
+
+            if ($config.Keys -contains "report_schedule")
+            {
+                $obj["ReportSchedule"] = [HashTable]$config["report_schedule"]
+            }
+
+            if ($config.Keys -contains "install_schedule")
+            {
+                $obj["InstallSchedule"] = [HashTable]$config["install_schedule"]
+            }
+
+            [PSCustomObject]$obj
+        }
+
+        # Process each system in the system list
+        Write-Information "Scheduling patch install for systems"
+        $parentJob = $states | ForEach-Object -Parallel {
+            $state = $_
+
+            # Script settings
+            $ErrorActionPreference = "Stop"
+            $InformationPreference = "Continue"
+            Set-StrictMode -Version 2
+
+            # Extract the config
+            $config = $state.Config
+            $system = $state.System
+
+            # Display config
+            Write-Information ("${system}: System config: " + ($state | ConvertTo-Json))
+
+            # Create a new session for the target
+            Write-Information "${system}: Creating PSSession"
+            $session = New-PSSession -ComputerName $state.System
+
+            # Ensure the _patching directory exists
+            Write-Information "${system}: Creating _patching directory"
+            Invoke-Command -Session $session -ScriptBlock {
+                New-Item -ItemType Directory "C:\_patching" -EA Ignore | Out-Null
+
+                Get-Item "C:\_patching" | Out-Null
+            }
+
+            # Copy the patching script to the target
+            Write-Information "${system}: Copying script"
+            Copy-Item -Force $state.ScriptPath "C:\_patching\" -ToSession $session
+
+            # Configure the reporting scheduled task
+            Write-Information "${system}: Creating report scheduled task"
+            Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
+                param($state)
+
+                # Settings
+                $ErrorActionPreference = "Stop"
+                $InformationPreference = "Continue"
+                Set-StrictMode -Version 2
+
+                $argument = "-NonInteractive C:\_patching\patch_system.ps1"
+                if (![string]::IsNullOrEmpty($state.Proxy))
+                {
+                    $argument += (" -Proxy " + $state.Proxy)
+                }
+                $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
+
+                # Trigger to run the scheduled task
+                $trigger = @(
+                    # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
+                    # empty trigger list is provided
+                    New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
+                )
+
+                $report_schedule = $state.ReportSchedule
+                if ($null -ne $report_schedule)
+                {
+                    Write-Information ("Report trigger: " + ($report_schedule | ConvertTo-Json))
+                    $trigger = New-ScheduledTaskTrigger @report_schedule
+                }
+
+                $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+                $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+                # Attempt to create the task, but ignore failure
+                Register-ScheduledTask -Taskname "SystemPatching - Report" -InputObject $task -EA Ignore | Out-Null
+
+                # Update settings for the scheduled task
+                Set-ScheduledTask -TaskName "SystemPatching - Report" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+            }
+
+            # Configure the patching scheduled task
+            Write-Information "${system}: Creating patch scheduled task"
+            Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
+                param($state)
+
+                # Settings
+                $ErrorActionPreference = "Stop"
+                $InformationPreference = "Continue"
+                Set-StrictMode -Version 2
+
+                $argument = "-NonInteractive C:\_patching\patch_system.ps1 -Install -CanReboot"
+                if (![string]::IsNullOrEmpty($state.Proxy))
+                {
+                    $argument += (" -Proxy " + $state.Proxy)
+                }
+                $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
+
+                # Trigger to run the scheduled task
+                $trigger = @(
+                    # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
+                    # empty trigger list is provided
+                    New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
+                )
+
+                $install_schedule = $state.InstallSchedule
+                if ($null -ne $install_schedule)
+                {
+                    Write-Information ("Install trigger: " + ($install_schedule | ConvertTo-Json))
+                    $trigger = New-ScheduledTaskTrigger @install_schedule
+                }
+
+                $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+                $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+                # Attempt to create the task, but ignore failure
+                Register-ScheduledTask -Taskname "SystemPatching - Install" -InputObject $task -EA Ignore | Out-Null
+
+                # Update settings for the scheduled task
+                Set-ScheduledTask -TaskName "SystemPatching - Install" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+            }
+
+            Write-Information "${system}: Completed patching task refresh"
+
+        } -ThrottleLimit $ThrottleLimit -AsJob
+
+        # Process child jobs
+        $start = [DateTime]::Now
+        Write-Information "Processing child jobs"
+        while ($true)
+        {
+            # Receive any child jobs
+            $parentJob.ChildJobs | Where-Object {
+                $null -ne $_.PSEndTime -and $_.HasMoreData
+            } | ForEach-Object {
+                $job = $_
+
+                try {
+                    Receive-Job $job
+                } catch {
+                    Write-Information "Exception from job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
+            }
+
+            # Stop any jobs that have taken too long (hung accessing a remote system?)
+            $parentJob.ChildJobs | Where-Object {
+                $_.PSBeginTime -lt ([DateTime]::Now.AddSeconds(-$JobLimitSeconds)) -and $null -ne $_.PSEndTime
+            } | ForEach-Object {
+                Write-Information "Found stuck job: $_"
+                Stop-Job $_
+            }
+
+            # Stop all jobs if over the threshold
+            if ([DateTime]::Now -gt $start.AddSeconds($TotalLimitSeconds))
+            {
+                Write-Information "Over threshold for time. Stopping jobs"
+                Stop-Job $parentJob
+                try {
+                    Receive-Job $parentJob
+                } catch {
+                    Write-Information "Exception receiving parent job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
+                break
+            }
+
+            # Remove the parent job if everything is finished
+            if ($null -ne $parentJob.PSEndTime)
+            {
+                Write-Information "Parent job finished"
+                try {
+                    Receive-Job $parentJob
+                } catch {
+                    Write-Information "Exception receiving parent job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
+                Remove-Job $parentJob
+                break
+            }
+
+            # Wait for more jobs to complete
+            Start-Sleep -Seconds 5
+        }
+    }
+}
 
