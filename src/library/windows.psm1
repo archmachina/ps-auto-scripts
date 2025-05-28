@@ -785,7 +785,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
             $obj = @{
                 System = $system
                 Config = $config
-                ScriptPath = ([System.IO.Path]::Combine($PSScriptRoot, "patch_system.ps1"))
+                ScriptPath = ([System.IO.Path]::Combine($PSScriptRoot, "winupd_mgmt.ps1"))
                 Proxy = $Proxy
                 ReportSchedule = $null
                 InstallSchedule = $null
@@ -847,7 +847,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                 $InformationPreference = "Continue"
                 Set-StrictMode -Version 2
 
-                $argument = "-NonInteractive C:\_patching\patch_system.ps1"
+                $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1"
                 if (![string]::IsNullOrEmpty($state.Proxy))
                 {
                     $argument += (" -Proxy " + $state.Proxy)
@@ -888,7 +888,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                 $InformationPreference = "Continue"
                 Set-StrictMode -Version 2
 
-                $argument = "-NonInteractive C:\_patching\patch_system.ps1 -Install -CanReboot"
+                $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1 -Install -CanReboot"
                 if (![string]::IsNullOrEmpty($state.Proxy))
                 {
                     $argument += (" -Proxy " + $state.Proxy)
