@@ -791,12 +791,12 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                 InstallSchedule = $null
             }
 
-            if ($config -contains "report_schedule")
+            if ($config.Keys -contains "report_schedule")
             {
                 $obj["ReportSchedule"] = [HashTable]$config["report_schedule"]
             }
 
-            if ($config -contains "install_schedule")
+            if ($config.Keys -contains "install_schedule")
             {
                 $obj["InstallSchedule"] = [HashTable]$config["install_schedule"]
             }

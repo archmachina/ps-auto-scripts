@@ -31,36 +31,6 @@ try {
     $PSStyle.OutputRendering = [System.Management.Automation.OutputRendering]::PlainText
 } catch {}
 
-# Proxy configuration
-if (![string]::IsNullOrEmpty($Proxy))
-{
-    $Env:HTTP_PROXY = $Proxy
-    $Env:HTTPS_PROXY = $Proxy
-
-    try {
-        [System.Net.Http.HttpClient]::DefaultProxy = [System.Net.WebProxy]::new($proxy)
-        [System.Net.Http.HttpClient]::DefaultProxy.BypassProxyOnLocal = $true
-    } catch {
-        Write-Information "Failed to set HttpClient proxy: $_"
-    }
-
-    try {
-        [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($proxy)
-        [System.Net.WebRequest]::DefaultWebProxy.BypassProxyOnLocal = $true
-    } catch {
-        Write-Information "Failed to set WebRequest proxy: $_"
-    }
-}
-
-# Import modules
-# Older versions of powershell don't seem to support '-EA Ignore'
-$ErrorActionPreference = "Ignore"
-Install-Module -Scope CurrentUser WinUpd
-Update-Module WinUpd
-
-$ErrorActionPreference = "Stop"
-Import-Module WinUpd
-
 # Global Variables
 $script:LogFile = "log.txt"
 $script:LogMessageUseInfo = $null
@@ -105,9 +75,6 @@ Function LogMessage
     }
 }
 
-# Make sure we start in the script directory
-Set-Location $PSScriptRoot
-
 # Truncate log file
 if (![string]::IsNullOrEmpty($LogFile))
 {
@@ -122,6 +89,66 @@ if (![string]::IsNullOrEmpty($LogFile))
 # Start patching process
 & {
     try {
+
+        # Make sure we start in the script directory
+        "Changing to $PSScriptRoot"
+        Set-Location $PSScriptRoot
+
+        # Proxy configuration
+        if (![string]::IsNullOrEmpty($Proxy))
+        {
+            $Env:HTTP_PROXY = $Proxy
+            $Env:HTTPS_PROXY = $Proxy
+
+            try {
+                [System.Net.Http.HttpClient]::DefaultProxy = [System.Net.WebProxy]::new($proxy)
+                [System.Net.Http.HttpClient]::DefaultProxy.BypassProxyOnLocal = $true
+            } catch {
+                "Failed to set HttpClient proxy: $_"
+            }
+
+            try {
+                [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($proxy)
+                [System.Net.WebRequest]::DefaultWebProxy.BypassProxyOnLocal = $true
+            } catch {
+                "Failed to set WebRequest proxy: $_"
+            }
+        }
+
+        # Import modules
+        "Install NuGet package provider"
+        try {
+            # Set TLS support to 1.1 and 1.2 explicitly
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Confirm:$false -Scope CurrentUser
+        } catch {
+            "Error updating package provider: $_"
+        }
+
+        "Trusting PSGallery"
+        try {
+            Set-PSRepository PSGallery -InstallationPolicy Trusted
+        } catch {
+            "Error trusting PSGallery: $_"
+        }
+
+        "Installing WinUpd"
+        try {
+            Install-Module -Scope CurrentUser WinUpd -Confirm:$false
+        } catch {
+            "Error installing WinUpd module: $_"
+        }
+
+        "Updating WinUpd"
+        try {
+            Update-Module WinUpd
+        } catch {
+            "Error updating WinUpd module: $_"
+        }
+
+        "Importing WinUpd"
+        Import-Module WinUpd
+
         "Updating cab file"
         Update-WinUpdCabFile -Path $CabFile -Verbose
 
