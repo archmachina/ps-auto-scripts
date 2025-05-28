@@ -146,6 +146,9 @@ if (![string]::IsNullOrEmpty($LogFile))
             "Error updating WinUpd module: $_"
         }
 
+        "Listing WinUpd module/s"
+        Get-Module -ListAvailable | Where-Object { $_.Name -eq "WinUpd" } | Out-String
+
         "Importing WinUpd"
         Import-Module WinUpd
 

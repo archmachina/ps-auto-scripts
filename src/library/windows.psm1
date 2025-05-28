@@ -789,6 +789,9 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                 Proxy = $Proxy
                 ReportSchedule = $null
                 InstallSchedule = $null
+                Completed = $false
+                Error = $null
+                InactiveSchedule = ([DateTime]::New(1990, 1, 1))
             }
 
             if ($config.Keys -contains "report_schedule")
@@ -814,112 +817,115 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
             $InformationPreference = "Continue"
             Set-StrictMode -Version 2
 
-            # Extract the config
-            $config = $state.Config
-            $system = $state.System
 
-            # Display config
-            Write-Information ("${system}: System config: " + ($state | ConvertTo-Json))
+            try {
+                # Extract the config
+                $config = $state.Config
+                $system = $state.System
 
-            # Create a new session for the target
-            Write-Information "${system}: Creating PSSession"
-            $session = New-PSSession -ComputerName $state.System
+                # Create a new session for the target
+                Write-Information "${system}: Creating PSSession"
+                $session = New-PSSession -ComputerName $state.System
 
-            # Ensure the _patching directory exists
-            Write-Information "${system}: Creating _patching directory"
-            Invoke-Command -Session $session -ScriptBlock {
-                New-Item -ItemType Directory "C:\_patching" -EA Ignore | Out-Null
+                # Ensure the _patching directory exists
+                Write-Information "${system}: Creating _patching directory"
+                Invoke-Command -Session $session -ScriptBlock {
+                    New-Item -ItemType Directory "C:\_patching" -EA Ignore | Out-Null
 
-                Get-Item "C:\_patching" | Out-Null
+                    Get-Item "C:\_patching" | Out-Null
+                }
+
+                # Copy the patching script to the target
+                Write-Information "${system}: Copying script"
+                Copy-Item -Force $state.ScriptPath "C:\_patching\" -ToSession $session
+
+                # Configure the reporting scheduled task
+                Write-Information "${system}: Creating report scheduled task"
+                Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
+                    param($state)
+
+                    # Settings
+                    $ErrorActionPreference = "Stop"
+                    $InformationPreference = "Continue"
+                    Set-StrictMode -Version 2
+
+                    $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1"
+                    if (![string]::IsNullOrEmpty($state.Proxy))
+                    {
+                        $argument += (" -Proxy " + $state.Proxy)
+                    }
+                    $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
+
+                    # Trigger to run the scheduled task
+                    $trigger = @(
+                        # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
+                        # empty trigger list is provided
+                        New-ScheduledTaskTrigger -Once -At $state.InactiveSchedule
+                    )
+
+                    $report_schedule = $state.ReportSchedule
+                    if ($null -ne $report_schedule)
+                    {
+                        $trigger = New-ScheduledTaskTrigger @report_schedule
+                    }
+
+                    $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+                    $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+                    # Attempt to create the task, but ignore failure
+                    Register-ScheduledTask -Taskname "SystemPatching - Report" -InputObject $task -EA Ignore | Out-Null
+
+                    # Update settings for the scheduled task
+                    Set-ScheduledTask -TaskName "SystemPatching - Report" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+                }
+
+                # Configure the patching scheduled task
+                Write-Information "${system}: Creating patch scheduled task"
+                Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
+                    param($state)
+
+                    # Settings
+                    $ErrorActionPreference = "Stop"
+                    $InformationPreference = "Continue"
+                    Set-StrictMode -Version 2
+
+                    $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1 -Install -CanReboot"
+                    if (![string]::IsNullOrEmpty($state.Proxy))
+                    {
+                        $argument += (" -Proxy " + $state.Proxy)
+                    }
+                    $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
+
+                    # Trigger to run the scheduled task
+                    $trigger = @(
+                        # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
+                        # empty trigger list is provided
+                        New-ScheduledTaskTrigger -Once -At $state.InactiveSchedule
+                    )
+
+                    $install_schedule = $state.InstallSchedule
+                    if ($null -ne $install_schedule)
+                    {
+                        $trigger = New-ScheduledTaskTrigger @install_schedule
+                    }
+
+                    $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+                    $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
+
+                    # Attempt to create the task, but ignore failure
+                    Register-ScheduledTask -Taskname "SystemPatching - Install" -InputObject $task -EA Ignore | Out-Null
+
+                    # Update settings for the scheduled task
+                    Set-ScheduledTask -TaskName "SystemPatching - Install" -Trigger $trigger -Action $action -Principal $principal | Out-Null
+                }
+
+                Write-Information "${system}: Completed patching task refresh"
+                $state.Completed = $true
+
+            } catch {
+                Write-Information "${system}: Failed to apply patch task: $_"
+                $state.Error = $_
             }
-
-            # Copy the patching script to the target
-            Write-Information "${system}: Copying script"
-            Copy-Item -Force $state.ScriptPath "C:\_patching\" -ToSession $session
-
-            # Configure the reporting scheduled task
-            Write-Information "${system}: Creating report scheduled task"
-            Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
-                param($state)
-
-                # Settings
-                $ErrorActionPreference = "Stop"
-                $InformationPreference = "Continue"
-                Set-StrictMode -Version 2
-
-                $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1"
-                if (![string]::IsNullOrEmpty($state.Proxy))
-                {
-                    $argument += (" -Proxy " + $state.Proxy)
-                }
-                $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
-
-                # Trigger to run the scheduled task
-                $trigger = @(
-                    # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
-                    # empty trigger list is provided
-                    New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
-                )
-
-                $report_schedule = $state.ReportSchedule
-                if ($null -ne $report_schedule)
-                {
-                    Write-Information ("Report trigger: " + ($report_schedule | ConvertTo-Json))
-                    $trigger = New-ScheduledTaskTrigger @report_schedule
-                }
-
-                $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-                $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
-
-                # Attempt to create the task, but ignore failure
-                Register-ScheduledTask -Taskname "SystemPatching - Report" -InputObject $task -EA Ignore | Out-Null
-
-                # Update settings for the scheduled task
-                Set-ScheduledTask -TaskName "SystemPatching - Report" -Trigger $trigger -Action $action -Principal $principal | Out-Null
-            }
-
-            # Configure the patching scheduled task
-            Write-Information "${system}: Creating patch scheduled task"
-            Invoke-Command -Session $session -ArgumentList $state -ScriptBlock {
-                param($state)
-
-                # Settings
-                $ErrorActionPreference = "Stop"
-                $InformationPreference = "Continue"
-                Set-StrictMode -Version 2
-
-                $argument = "-NonInteractive C:\_patching\winupd_mgmt.ps1 -Install -CanReboot"
-                if (![string]::IsNullOrEmpty($state.Proxy))
-                {
-                    $argument += (" -Proxy " + $state.Proxy)
-                }
-                $action = New-ScheduledTaskAction -Execute powershell.exe -Argument $argument
-
-                # Trigger to run the scheduled task
-                $trigger = @(
-                    # Default trigger for something in the past - Set-ScheduledTask doesn't remove triggers when an
-                    # empty trigger list is provided
-                    New-ScheduledTaskTrigger -Once -At ([DateTime]::New(1990, 1, 1))
-                )
-
-                $install_schedule = $state.InstallSchedule
-                if ($null -ne $install_schedule)
-                {
-                    Write-Information ("Install trigger: " + ($install_schedule | ConvertTo-Json))
-                    $trigger = New-ScheduledTaskTrigger @install_schedule
-                }
-
-                $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-                $task = New-ScheduledTask -Principal $principal -Action $action -Trigger $trigger
-
-                # Attempt to create the task, but ignore failure
-                Register-ScheduledTask -Taskname "SystemPatching - Install" -InputObject $task -EA Ignore | Out-Null
-
-                # Update settings for the scheduled task
-                Set-ScheduledTask -TaskName "SystemPatching - Install" -Trigger $trigger -Action $action -Principal $principal | Out-Null
-            }
-
-            Write-Information "${system}: Completed patching task refresh"
 
         } -ThrottleLimit $ThrottleLimit -AsJob
 
@@ -944,9 +950,12 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
 
             # Stop any jobs that have taken too long (hung accessing a remote system?)
             $parentJob.ChildJobs | Where-Object {
-                $_.PSBeginTime -lt ([DateTime]::Now.AddSeconds(-$JobLimitSeconds)) -and $null -ne $_.PSEndTime
+                $null -ne $_.PSBeginTime -and
+                $_.PSBeginTime -lt ([DateTime]::Now.AddSeconds(-$JobLimitSeconds)) -and
+                $null -eq $_.PSEndTime
             } | ForEach-Object {
-                Write-Information "Found stuck job: $_"
+                Write-Information "Found stuck job"
+                $_ | Format-List -Property Id,Name,PSBeginTime,PSEndTime,State,HasMoreData
                 Stop-Job $_
             }
 
@@ -981,6 +990,21 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
             # Wait for more jobs to complete
             Start-Sleep -Seconds 5
         }
+
+        # Report on any failed systems
+        $failed = $states | Where-Object { -not $_.Completed }
+        if (($failed | Measure-Object).Count -gt 0)
+        {
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Failed to apply patch task for systems:"
+                $failed | Format-Table System,Completed,Error | Out-String -Width 300
+            }
+        }
+
+        # Display information for the logs
+        Write-Information "Patch apply state:"
+        $states | Format-Table -Property System,Completed,Error | Out-String -Width 300
     }
 }
 
