@@ -138,13 +138,13 @@ if (![string]::IsNullOrEmpty($LogFile))
 
         "Installing WinUpd"
         try {
-            Install-Module -Scope CurrentUser -RequiredVersion 0.1.3 WinUpd -Confirm:$false
+            Install-Module -Scope CurrentUser -RequiredVersion 0.1.5 WinUpd -Confirm:$false
         } catch {
             "Error installing WinUpd module: $_"
         }
 
         "Importing WinUpd"
-        Import-Module WinUpd -RequiredVersion 0.1.3
+        Import-Module WinUpd -RequiredVersion 0.1.5
 
         $updArgs = @{}
         if ($UseCab)
@@ -227,11 +227,18 @@ if (![string]::IsNullOrEmpty($LogFile))
 
         # Write a system state out to file
         "Writing system state json"
+        $stateUpdates = $summaryPatches
+        if (($stateUpdates | Measure-Object).Count -eq 0)
+        {
+            # This is to handle peculiarities with the PS5 convert to json command - Empty collections
+            # end up as empty dictionaries in json.
+            $stateUpdates = @()
+        }
         $patchState = [PSCustomObject]@{
             Hostname = ([System.Net.DNS]::GetHostname())
             DateUtc = [DateTime]::UtcNow
             DateUtcStr = [DateTime]::UtcNow.ToString("o")
-            Updates = $summaryPatches
+            Updates = $stateUpdates
             CabModificationTime = (Get-Item $CabFile).LastWriteTimeUtc
             CabModificationTimeStr = (Get-Item $CabFile).LastWriteTimeUtc.ToString("o")
         }
