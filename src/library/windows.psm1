@@ -1009,3 +1009,216 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
     }
 }
 
+Register-Automation -Name windows.report_patch_state -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        [string[]]$Systems,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$ThrottleLimit = 5,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$JobLimitSeconds = 60,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$TotalLimitSeconds = (60 * 5)
+    )
+
+    process
+    {
+        # Create state objects for each system
+        $states = $Systems | ForEach-Object {
+            $system = [string]$_
+
+            $obj = @{
+                System = $system
+                PatchState = $null
+                Completed = $false
+                Error = $null
+            }
+
+            [PSCustomObject]$obj
+        }
+
+        # Process each system in the system list
+        Write-Information "Checking patch state for systems"
+        $parentJob = $states | ForEach-Object -Parallel {
+            $state = $_
+
+            # Script settings
+            $ErrorActionPreference = "Stop"
+            $InformationPreference = "Continue"
+            Set-StrictMode -Version 2
+
+            try {
+                # Extract the config
+                $system = $state.System
+
+                # Create a new session for the target
+                Write-Information "${system}: Creating PSSession"
+                $session = New-PSSession -ComputerName $state.System
+
+                # Make sure we have a recent state file
+                $writeTime = Invoke-Command -Session $session -ScriptBlock {
+                    (Get-Item "C:\_patching\state.json").LastWriteTime
+                }
+
+                if ($writeTime -lt ([DateTime]::Now.AddDays(-3)))
+                {
+                    Write-Error "${system}: Patching information is too old: $writeTime"
+                }
+
+                # Get patching state from the remote system
+                $state.PatchState = Invoke-Command -Session $session -ScriptBlock {
+                    Get-Content "C:\_patching\state.json"
+                } | ConvertFrom-Json
+
+                Write-Information "${system}: Completed patch state collection"
+                $state.Completed = $true
+
+            } catch {
+                Write-Information "${system}: Failed to check patch state: $_"
+                $state.Error = $_
+            }
+
+        } -ThrottleLimit $ThrottleLimit -AsJob
+
+        # Process child jobs
+        $start = [DateTime]::Now
+        Write-Information "Processing child jobs"
+        while ($true)
+        {
+            # Receive any child jobs
+            $parentJob.ChildJobs | Where-Object {
+                $null -ne $_.PSEndTime -and $_.HasMoreData
+            } | ForEach-Object {
+                $job = $_
+
+                try {
+                    Receive-Job $job
+                } catch {
+                    Write-Information "Exception from job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
+            }
+
+            # Stop any jobs that have taken too long (hung accessing a remote system?)
+            $parentJob.ChildJobs | Where-Object {
+                $null -ne $_.PSBeginTime -and
+                $_.PSBeginTime -lt ([DateTime]::Now.AddSeconds(-$JobLimitSeconds)) -and
+                $null -eq $_.PSEndTime
+            } | ForEach-Object {
+                Write-Information "Found stuck job"
+                $_ | Format-List -Property Id,Name,PSBeginTime,PSEndTime,State,HasMoreData
+                Stop-Job $_
+            }
+
+            # Stop all jobs if over the threshold
+            if ([DateTime]::Now -gt $start.AddSeconds($TotalLimitSeconds))
+            {
+                Write-Information "Over threshold for time. Stopping jobs"
+                Stop-Job $parentJob
+                try {
+                    Receive-Job $parentJob
+                } catch {
+                    Write-Information "Exception receiving parent job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
+                break
+            }
+
+            # Remove the parent job if everything is finished
+            if ($null -ne $parentJob.PSEndTime)
+            {
+                Write-Information "Parent job finished"
+                try {
+                    Receive-Job $parentJob
+                } catch {
+                    Write-Information "Exception receiving parent job: $_"
+                    Write-Information $_.ScriptStackTrace
+                }
+                Remove-Job $parentJob
+                break
+            }
+
+            # Wait for more jobs to complete
+            Start-Sleep -Seconds 5
+        }
+
+        # Report on any failed systems
+        $failed = $states | Where-Object { -not $_.Completed }
+        if (($failed | Measure-Object).Count -gt 0)
+        {
+            Write-Information ""
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Failed to collect patch state for systems:"
+                $failed | Format-Table System,Completed,Error | Out-String -Width 300
+            }
+            New-Notification -Title "Failed to collect patch state" -Body ($capture.ToString())
+        }
+
+        # Notification on patch state
+        Write-Information "Generating patch list"
+        $parseFailure = @()
+        $patchList = @{}
+        $states | Where-Object { $null -ne $_.PatchState } | ForEach-Object {
+            $state = $_
+            $system = $state.System
+
+            try {
+                if ([DateTime]$state.PatchState.DateUtc -lt ([DateTime]::Now.AddDays(-3)))
+                {
+                    Write-Error ("Patch state is too stale: " + $state.PatchState.DateUtc.ToString("o"))
+                }
+
+                $state.PatchState.Updates | ForEach-Object {
+                    $title = $_.Title
+
+                    if ($title -notin $patchList.Keys)
+                    {
+                        $patchList[$title] = [PSCustomObject]@{
+                            Title = $title
+                            Systems = @()
+                        }
+                    }
+
+                    $patchList[$title].Systems += $system
+                }
+            } catch {
+                Write-Information "Failed to parse patch information for ${system}: $_"
+                $parseFailure += $system
+            }
+        }
+
+        # Notify on systems failed parsing
+        if (($parseFailure | Measure-Object).Count -gt 0)
+        {
+            Write-Information ""
+            $capture = New-Capture
+            Invoke-CaptureScript -Capture $capture -ScriptBlock {
+                Write-Information "Parse failure:"
+                $parseFailure
+            }
+            New-Notification -Title "Parse failure" -Body ($capture.ToString())
+        }
+
+        # Display patch information
+        $capture = New-Capture
+        Write-Information ""
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Patch list:"
+            $patchList.Values | Format-List | Out-String -Width 300
+        }
+        New-Notification -Title "Patch List" -Body ($capture.ToString())
+    }
+}
+
