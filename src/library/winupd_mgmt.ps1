@@ -138,23 +138,13 @@ if (![string]::IsNullOrEmpty($LogFile))
 
         "Installing WinUpd"
         try {
-            Install-Module -Scope CurrentUser WinUpd -Confirm:$false
+            Install-Module -Scope CurrentUser -RequiredVersion 0.1.3 WinUpd -Confirm:$false
         } catch {
             "Error installing WinUpd module: $_"
         }
 
-        "Updating WinUpd"
-        try {
-            Update-Module WinUpd
-        } catch {
-            "Error updating WinUpd module: $_"
-        }
-
-        "Listing WinUpd module/s"
-        Get-Module -ListAvailable | Where-Object { $_.Name -eq "WinUpd" } | Out-String
-
         "Importing WinUpd"
-        Import-Module WinUpd
+        Import-Module WinUpd -RequiredVersion 0.1.3
 
         $updArgs = @{}
         if ($UseCab)
@@ -193,7 +183,7 @@ if (![string]::IsNullOrEmpty($LogFile))
         }
 
         "Retrieving a patch list"
-        $patches = Get-WinUpdUpdates
+        $patches = Get-WinUpdUpdates @updArgs
         $patches | Format-Table -Property LastDeploymentChangeTime,MsrcSeverity,Title | Out-String
 
         "Writing raw patch list to json"
@@ -208,7 +198,7 @@ if (![string]::IsNullOrEmpty($LogFile))
                 [PSCustomObject]@{
                     Title = $_.Title
                     RebootRequired = $_.RebootRequired
-                    LastDeploymentChangeTime = $_.LastDeploymentChangeTime.ToString("o")
+                    LastDeploymentChangeTime = $_.LastDeploymentChangeTime
                     KBArticleIDs = $_.KBArticleIDs
                     Description = $_.Description
                     Categories = $_.Categories
