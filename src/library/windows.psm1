@@ -1000,6 +1000,7 @@ Register-Automation -Name windows.refresh_patch_task -ScriptBlock {
                 Write-Information "Failed to apply patch task for systems:"
                 $failed | Format-Table System,Completed,Error | Out-String -Width 300
             }
+            New-Notification -Title "Failed to apply patch task" -Body ($capture.ToString())
         }
 
         # Display information for the logs
