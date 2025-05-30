@@ -1187,6 +1187,7 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
                     {
                         $patchList[$title] = [PSCustomObject]@{
                             Title = $title
+                            LastDeploymentChangeTime = $_.LastDeploymentChangeTime
                             Systems = @()
                         }
                     }
@@ -1215,10 +1216,32 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
         $capture = New-Capture
         Write-Information ""
         Invoke-CaptureScript -Capture $capture -ScriptBlock {
-            Write-Information "Patch list:"
-            $patchList.Values | Format-List | Out-String -Width 300
+            Write-Information "Updates (by title):"
+            $patchList.Values | Sort-Object -Property LastDeploymentChangeTime | ForEach-Object {
+                Write-Information ""
+                Write-Information ("Title: " + $_.Title)
+                Write-Information ("Date: " + $_.LastDeploymentChangeTime)
+                Write-Information ("Systems: " + ($_.Systems -join ", "))
+            }
         }
-        New-Notification -Title "Patch List" -Body ($capture.ToString())
+
+        New-Notification -Title "Updates (by system)" -Body ($capture.ToString())
+        # Display patch information
+        $capture = New-Capture
+        Write-Information ""
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Updates (by system):"
+            $states | ForEach-Object {
+                Write-Information ""
+                Write-Information ("System: " + $_.System)
+                if ($null -ne $_.PatchState)
+                {
+                    $_.PatchState.Updates |
+                        Sort-Object -Property LastDeploymentChangeTime |
+                        Format-Table -HideTableHeaders -Property LastDeploymentChangeTime,Title
+                }
+            }
+        }
+        New-Notification -Title "Updates (by title)" -Body ($capture.ToString())
     }
 }
-
