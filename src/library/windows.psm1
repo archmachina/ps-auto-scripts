@@ -1166,7 +1166,7 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
             New-Notification -Title "Failed to collect patch state" -Body ($capture.ToString())
         }
 
-        # Notification on patch state
+        # Organise patches by patch
         Write-Information "Generating patch list"
         $parseFailure = @()
         $patchList = @{}
@@ -1212,11 +1212,61 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
             New-Notification -Title "Parse failure" -Body ($capture.ToString())
         }
 
-        # Display patch information
+        # Display summary by patch
         $capture = New-Capture
         Write-Information ""
         Invoke-CaptureScript -Capture $capture -ScriptBlock {
-            Write-Information "Updates (by title):"
+            Write-Information "Summary by update:"
+            $patchList.Values | Sort-Object -Property LastDeploymentChangeTime | ForEach-Object {
+                [PSCustomObject]@{
+                    Title = $_.Title
+                    Date = $_.LastDeploymentChangeTime
+                    Count = ($_.Systems | Measure-Object).Count
+                }
+            } | Format-Table -Wrap | Out-String -Width 300
+        }
+        New-Notification -Title "Summary by update" -Body ($capture.ToString())
+
+        # Display summary by system
+        $capture = New-Capture
+        Write-Information ""
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Summary by system:"
+            $states | ForEach-Object {
+                $obj = [PSCustomObject]@{
+                    System = $_.System
+                    Critical = 0
+                    Important = 0
+                    Moderate = 0
+                    Low = 0
+                    Other = 0
+                    Total = 0
+                    Oldest = $null
+                }
+
+                if ($null -ne $_.PatchState -and ($_.PatchState.Updates | Measure-Object).Count -gt 0)
+                {
+                    $obj.Critical = ($_.PatchState.Updates | Where-Object { $_.MsrcSeverity -eq "Critical" } | Measure-Object).Count
+                    $obj.Important = ($_.PatchState.Updates | Where-Object { $_.MsrcSeverity -eq "Important" } | Measure-Object).Count
+                    $obj.Moderate = ($_.PatchState.Updates | Where-Object { $_.MsrcSeverity -eq "Moderate" } | Measure-Object).Count
+                    $obj.Low = ($_.PatchState.Updates | Where-Object { $_.MsrcSeverity -eq "Low" } | Measure-Object).Count
+                    $obj.Other = ($_.PatchState.Updates | Where-Object {
+                        [string]::IsNullOrEmpty($_.MsrcSeverity) -or $_.MsrcSeverity -notin @("Critical", "Important", "Moderate", "Low")
+                    } | Measure-Object).Count
+                    $obj.Total = ($_.PatchState.Updates | Measure-Object).Count
+                    $obj.Oldest = ($_.PatchState.Updates | Sort-Object -Property LastDeploymentChangeTime)[0].LastDeploymentChangeTime
+                }
+
+                $obj
+            } | Sort-Object -Property System | Format-Table -Wrap | Out-String -Width 300
+        }
+        New-Notification -Title "Summary by system" -Body ($capture.ToString())
+
+        # Display detail by patch
+        $capture = New-Capture
+        Write-Information ""
+        Invoke-CaptureScript -Capture $capture -ScriptBlock {
+            Write-Information "Detail by update:"
             $patchList.Values | Sort-Object -Property LastDeploymentChangeTime | ForEach-Object {
                 Write-Information ""
                 Write-Information ("Title: " + $_.Title)
@@ -1224,13 +1274,13 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
                 Write-Information ("Systems: " + ($_.Systems -join ", "))
             }
         }
+        New-Notification -Title "Detail by update" -Body ($capture.ToString())
 
-        New-Notification -Title "Updates (by system)" -Body ($capture.ToString())
-        # Display patch information
+        # Display detail by system
         $capture = New-Capture
         Write-Information ""
         Invoke-CaptureScript -Capture $capture -ScriptBlock {
-            Write-Information "Updates (by system):"
+            Write-Information "Detail by system:"
             $states | ForEach-Object {
                 Write-Information ""
                 Write-Information ("System: " + $_.System)
@@ -1242,6 +1292,6 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
                 }
             }
         }
-        New-Notification -Title "Updates (by title)" -Body ($capture.ToString())
+        New-Notification -Title "Detail by system" -Body ($capture.ToString())
     }
 }
