@@ -12,6 +12,7 @@ $InformationPreference = "Continue"
 # Modules
 Import-Module ActiveDirectory
 Import-Module $PSScriptRoot\common.psm1
+Import-Module AutomationUtils
 
 # Functions
 
@@ -1219,9 +1220,9 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
             Write-Information "Summary by update:"
             $patchList.Values | Sort-Object -Property LastDeploymentChangeTime | ForEach-Object {
                 [PSCustomObject]@{
-                    Title = $_.Title
-                    Date = $_.LastDeploymentChangeTime
-                    Count = ($_.Systems | Measure-Object).Count
+                    Systems = ($_.Systems | Measure-Object).Count
+                    Released = $_.LastDeploymentChangeTime
+                    Update = (Split-StringLength -Str $_.Title -WrapLength 80 | Out-String).Trim()
                 }
             } | Format-Table -Wrap | Out-String -Width 300
         }
