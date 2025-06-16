@@ -1259,7 +1259,7 @@ Register-Automation -Name windows.report_patch_state -ScriptBlock {
                 }
 
                 $obj
-            } | Sort-Object -Property System | Format-Table -Wrap | Out-String -Width 300
+            } | Sort-Object -Property Oldest | Format-Table -Wrap | Out-String -Width 300
         }
         New-Notification -Title "Summary by system" -Body ($capture.ToString())
 
