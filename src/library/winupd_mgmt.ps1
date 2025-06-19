@@ -172,6 +172,15 @@ if (![string]::IsNullOrEmpty($LogFile))
             "Filtering patches by age: $age"
             $patches = $patches | Where-Object { $_.LastDeploymentChangeTime -lt ([DateTime]::Now.AddDays(-$age)) }
 
+			"Accepting EULAs"
+			$patches | ForEach-Object {
+				try {
+					$_.AcceptEula()
+				} catch {
+					"Error accepting Eula: $_"
+				}
+			}
+
             if (($patches | Measure-Object).Count -gt 0)
             {
                 "Installing patches"
