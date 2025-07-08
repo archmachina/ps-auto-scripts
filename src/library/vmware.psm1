@@ -1519,6 +1519,14 @@ Register-Automation -Name vmware.vsan_health -ScriptBlock {
         # Produce separate notifications for each cluster
         $Clusters | ForEach-Object {
             $cluster = $_
+            Write-Information "Cluster: $($cluster.Name)"
+
+            # Stop here if the cluster is not vsan enabled
+            if (-not $cluster.VsanEnabled)
+            {
+                Write-Information "Cluster is not vsan enabled"
+                return
+            }
 
             # Get a list of all vsan objects and filter for objects that
             # are not healthy
