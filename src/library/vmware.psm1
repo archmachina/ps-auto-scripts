@@ -1506,3 +1506,91 @@ Register-Automation -Name vmware.vm_top_usage -ScriptBlock {
     }
 }
 
+Register-Automation -Name vmware.vsan_health -ScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Clusters
+    )
+
+    process
+    {
+        # Produce separate notifications for each cluster
+        $Clusters | ForEach-Object {
+            $cluster = $_
+
+            # Get a list of all vsan objects and filter for objects that
+            # are not healthy
+            $objects = Get-VsanObject -Cluster $cluster
+            Write-Information ("Found {0} total vsan objects" -f ($objects | Measure-Object).Count)
+            $failed = $objects | Where-Object { $_.VsanHealth -ne "healthy" }
+            Write-Information ("Found {0} failed vsan objects" -f ($failed | Measure-Object).Count)
+
+            # Report on any unhealthy objects
+            if (($failed | Measure-Object).Count -gt 0)
+            {
+                $title = ("Unhealth VSAN objects - " + $cluster.Name)
+                New-Notification -Title $title -ScriptBlock {
+                    Write-Information $title
+                    Write-Information ""
+                    $failed | Format-Table Cluster,VsanHealth,VM,Type | Out-String -Width 300
+                }
+            }
+
+            # Get a vsan health report
+            $result = Test-VsanClusterHealth -Cluster $cluster
+            $result | Format-Table | Out-String -Width 300
+
+            # Check overall health status
+            Write-Information "Overall Health Status: $($result.OverallhealthStatus)"
+            if ($result.OverallhealthStatus -ne "info")
+            {
+                $title = "Overall Health Issue - $($result.Cluster)"
+                New-Notification -Title $title -ScriptBlock {
+                    Write-Information $title
+                    Write-Information ""
+                    $result | Format-Table Cluster,TimeOfTest,OverallHealthStatus,OverallHealthDescription | Out-String -Width 300
+                }
+            }
+
+            # Find hosts with disk issues
+            Write-Information "Host disk health state:"
+            $result.DiskHealthResult | Format-Table Host,OverallHealth
+            $issues = $result.DiskHealthResult | Where-Object {
+                $_.OverallHealth -ne "green"
+            }
+
+            # Report on any hosts with disk issues
+            if (($issues | Measure-Object).Count -gt 0)
+            {
+                $title = "Host Disk Issue - $($result.Cluster)"
+                New-Notification -Title $title -ScriptBlock {
+                    Write-Information $title
+                    Write-Information ""
+                    $issues | Format-Table Host,OverallHealth | Out-String -Width 300
+                }
+            }
+
+            # Find hosts with network issues
+            Write-Information "Host network health state:"
+            $result.NetworkHealth.HostResult | Format-Table Host,IssueFound
+            $issues = $result.NetworkHealth.HostResult | Where-Object {
+                $_.IssueFound
+            }
+
+            # Report on any hosts with network issues
+            if (($issues | Measure-Object).Count -gt 0)
+            {
+                $title = "Host Network Issue - $($result.Cluster)"
+                New-Notification -Title $title -ScriptBlock {
+                    Write-Information $title
+                    Write-Information ""
+                    $issues | Format-Table Host,IssueFound | Out-String -Width 300
+                }
+            }
+
+        }
+    }
+}
+
