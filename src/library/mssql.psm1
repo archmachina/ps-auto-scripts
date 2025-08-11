@@ -1021,7 +1021,10 @@ Register-Automation -Name mssql.eventlog_failed_logins -ScriptBlock {
         [string[]]$UserIgnore = @(),
 
         [Parameter(Mandatory=$false)]
-        [string]$ExecuteFrom = ""
+        [string]$ExecuteFrom = "",
+
+        [Parameter(Mandatory=$false)]
+        [int]$Threshold = 3
     )
 
     process
@@ -1094,8 +1097,12 @@ Register-Automation -Name mssql.eventlog_failed_logins -ScriptBlock {
                     Source = $_.Group[0].Source
                     Reason = $_.Group[0].Reason
                 }
+            } | Where-Object {
+                # Filter records that do not meet the failure threshold
+                $_.FailureCount -ge $Threshold
             }
         }
+
 
         # Report for logs
         Write-Information ("Found {0} failed login logs" -f ($records | Measure-Object).Count)
