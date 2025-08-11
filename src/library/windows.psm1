@@ -621,20 +621,25 @@ Register-Automation -Name active_directory.account_management_events -ScriptBloc
         if ($SkipMachineAccountChg)
         {
             Write-Information "Pruning machine account password changes"
-            $events = $events | ForEach-Object {
-                # If it doesn't have enough values for comparison, it probably
-                # isn't a machine account change
-                if (($_.Properties | Measure-Object).Count -lt 7)
-                {
-                    $_
-                }
-
+            $events = $events | Where-Object { $_.Id -eq 4742 } | ForEach-Object {
                 # Check if the subject and target are identical and the target
                 # account is a machine account
                 if ($_.Properties[1].Value -eq $_.Properties[5].Value -and
                     $_.Properties[2].Value -eq $_.Properties[6].Value -and
                     $_.Properties[3].Value -eq $_.Properties[4].Value -and
-                    $_.Properties.Value -like "*$" -and
+                    $_.Properties[1].Value -like "*$" -and
+                    $_.Message -like "*A computer account was changed*")
+                {
+                    Write-Information ("Machine account change for {0}\{1}" -f $_.Properties[2].Value, $_.Properties[1].Value)
+                    return
+                }
+
+                # Check if the subject and target are identical and the target
+                # account is a machine account
+                if ($_.Properties[4].Value -eq "S-1-5-7" -and
+                    $_.Properties[5].Value -eq "ANONYMOUS LOGON" -and
+                    $_.Properties[6].Value -eq "NT AUTHORITY" -and
+                    $_.Properties[1].Value -like "*$" -and
                     $_.Message -like "*A computer account was changed*")
                 {
                     Write-Information ("Machine account change for {0}\{1}" -f $_.Properties[2].Value, $_.Properties[1].Value)
