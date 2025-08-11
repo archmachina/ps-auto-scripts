@@ -534,7 +534,11 @@ Register-Automation -Name active_directory.account_management_events -ScriptBloc
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [int[]]$Remove = @()
+        [int[]]$Remove = @(),
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNull()]
+        [bool]$SkipMachineAccountChg = $true
     )
 
     process
@@ -610,6 +614,34 @@ Register-Automation -Name active_directory.account_management_events -ScriptBloc
             Invoke-CaptureScript -Capture $capture -ScriptBlock {
                 Write-Information "Server log query failed"
                 $failures | Format-Table -Wrap | Out-String -Width 300
+            }
+        }
+
+        # Skip machine account changes, if requested
+        if ($SkipMachineAccountChg)
+        {
+            Write-Information "Pruning machine account password changes"
+            $events = $events | ForEach-Object {
+                # If it doesn't have enough values for comparison, it probably
+                # isn't a machine account change
+                if (($_.Properties | Measure-Object).Count -lt 7)
+                {
+                    $_
+                }
+
+                # Check if the subject and target are identical and the target
+                # account is a machine account
+                if ($_.Properties[1].Value -eq $_.Properties[5].Value -and
+                    $_.Properties[2].Value -eq $_.Properties[6].Value -and
+                    $_.Properties[3].Value -eq $_.Properties[4].Value -and
+                    $_.Properties.Value -like "*$" -and
+                    $_.Message -like "*A computer account was changed*")
+                {
+                    Write-Information ("Machine account change for {0}\{1}" -f $_.Properties[2].Value, $_.Properties[1].Value)
+                    return
+                }
+
+                $_
             }
         }
 
