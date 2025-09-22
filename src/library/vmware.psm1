@@ -690,7 +690,7 @@ Register-Automation -Name vmware.vm_compare_config -ScriptBlock {
             $current = $spec.Keys | ForEach-Object { "{0} = {1}" -f $_, $spec[$_] } | Sort-Object
 
             # Read any existing configuration
-            $path = [System.IO.Path]::Combine($CheckPath, $vm.Name + ".txt")
+            $path = [System.IO.Path]::Combine($CheckPath, "$($vm.PersistentId).txt")
             if (Test-Path $path)
             {
                 $content = Get-Content -Encoding UTF8 $path
