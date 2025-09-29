@@ -185,8 +185,23 @@ if (![string]::IsNullOrEmpty($LogFile))
             {
                 "Installing patches"
                 $patches | Format-Table -Property LastDeploymentChangeTime,MsrcSeverity,Title | Out-String
+
+                # Bulk install
                 $result = Install-WinUpdUpdates -Updates $patches
                 $result | Format-List -Property * | Out-String -Width 300
+
+                # If the install failed or was not completely successful, try installing per patch
+                if ($result.InstallHResult -ne 0)
+                {
+                    "Install returned non-zero HResult. Attempting individual patch install"
+                    $patches | ForEach-Object {
+                        $patch = $_
+
+                        "Attempting install: $($patch.Title)"
+                        $result = Install-WinUpdUpdates -Updates @($patch)
+                        $result | Format-List -Property * | Out-String -Width 300
+                    }
+                }
             } else {
                 "No updates to install"
             }
