@@ -138,13 +138,13 @@ if (![string]::IsNullOrEmpty($LogFile))
 
         "Installing WinUpd"
         try {
-            Install-Module -Scope CurrentUser -RequiredVersion 0.1.5 WinUpd -Confirm:$false
+            Install-Module -Scope CurrentUser -RequiredVersion 0.1.6 WinUpd -Confirm:$false
         } catch {
             "Error installing WinUpd module: $_"
         }
 
         "Importing WinUpd"
-        Import-Module WinUpd -RequiredVersion 0.1.5
+        Import-Module WinUpd -RequiredVersion 0.1.6
 
         $updArgs = @{}
         if ($UseCab)
@@ -185,7 +185,9 @@ if (![string]::IsNullOrEmpty($LogFile))
             {
                 "Installing patches"
                 $patches | Format-Table -Property LastDeploymentChangeTime,MsrcSeverity,Title | Out-String
-                Install-WinUpdUpdates -Updates $patches
+                $result = Install-WinUpdUpdates -Updates $patches
+                $result.Download | Format-Table -Property * | Out-String -Width 300
+                $result.Install | Format-Table -Property * | Out-String -Width 300
             } else {
                 "No updates to install"
             }
@@ -265,5 +267,10 @@ if (![string]::IsNullOrEmpty($LogFile))
         "Patch apply failed: $_"
     }
 } *>&1 | ForEach-Object {
+    if ($null -eq $_)
+    {
+        return
+    }
+
     LogMessage ($_ | Out-String).Trim()
 }
