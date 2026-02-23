@@ -411,7 +411,11 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
 
         [Parameter(Mandatory=$false)]
         [ValidateNotNull()]
-        [int]$CommandTimeout = 360
+        [int]$CommandTimeout = 360,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$NotifyFilter = @()
     )
 
     process
@@ -488,6 +492,20 @@ Register-Automation -Name mssql.job_status -ScriptBlock {
         {
             New-Notification -Title "Job Status Report ($Name)" -Body $capture.ToString()
         } else {
+            # Apply filter to job results, when we are sending notifications (i.e. not summary)
+            $summary = $summary | ForEach-Object {
+                foreach ($item in $NotifyFilter)
+                {
+                    if ($_.job_name -match $item)
+                    {
+                        Write-Information "Filtering out job due to filter list: $($_.job_name)"
+                        return
+                    }
+                }
+
+                $_
+            }
+
             # Send a notification if any jobs have error statuses
             $errorSummary = $summary | Where-Object { $_.run_status -in @(0,2) }
             if (($errorSummary | Measure-Object).Count -gt 0)
