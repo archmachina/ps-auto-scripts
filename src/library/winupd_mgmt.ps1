@@ -183,6 +183,13 @@ if (![string]::IsNullOrEmpty($LogFile))
 
             if (($patches | Measure-Object).Count -gt 0)
             {
+                "Downloading patches"
+                $patches | Format-Table -Property LastDeploymentChangeTime,MsrcSeverity,Title | Out-String
+
+                # Bulk download
+                $result = Install-WinUpdUpdates -Updates $patches -DownloadOnly
+                $result | Format-List -Property * | Out-String -Width 300
+
                 "Installing patches"
                 $patches | Format-Table -Property LastDeploymentChangeTime,MsrcSeverity,Title | Out-String
 
